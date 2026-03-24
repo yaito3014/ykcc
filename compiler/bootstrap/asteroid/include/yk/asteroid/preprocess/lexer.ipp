@@ -13,24 +13,24 @@ constexpr std::size_t Lexer::resolve(std::size_t pos) const noexcept {
   return pos;
 }
 
-constexpr char Lexer::current() const noexcept {
+constexpr nullable_char Lexer::current() const noexcept {
   auto p = resolve(pos_);
-  return p < source_.size() ? source_[p] : '\0';
+  return p < source_.size() ? nullable_char{source_[p]} : nullable_char{};
 }
 
-constexpr char Lexer::peek_char(std::size_t offset) const noexcept {
+constexpr nullable_char Lexer::peek_char(std::size_t offset) const noexcept {
   auto p = resolve(pos_);
   for (std::size_t i = 0; i < offset; ++i) {
-    if (p >= source_.size()) return '\0';
+    if (p >= source_.size()) return {};
     ++p;
     p = resolve(p);
   }
-  return p < source_.size() ? source_[p] : '\0';
+  return p < source_.size() ? nullable_char{source_[p]} : nullable_char{};
 }
 
-constexpr char Lexer::advance() noexcept {
+constexpr nullable_char Lexer::advance() noexcept {
   auto p = resolve(pos_);
-  if (p >= source_.size()) return '\0';
+  if (p >= source_.size()) return {};
   char c = source_[p];
   ++p;
   if (c == '\n') {
@@ -83,7 +83,7 @@ constexpr PPToken Lexer::next() {
     return {PPTokenKind::EndOfFile, {}, current_location()};
   }
 
-  char c = current();
+  auto c = current();
 
   // Newline — significant for preprocessor
   if (c == '\n') {
@@ -91,7 +91,7 @@ constexpr PPToken Lexer::next() {
   }
 
   // Whitespace (not newline)
-  if (is_whitespace(c)) {
+  if (is_whitespace(c.value())) {
     return lex_whitespace();
   }
 
@@ -151,12 +151,12 @@ constexpr PPToken Lexer::next() {
   }
 
   // pp-number: starts with digit, or . followed by digit
-  if (is_digit(c) || (c == '.' && is_digit(peek_char()))) {
+  if (is_digit(c.value()) || (c == '.' && peek_char() && is_digit(peek_char().value()))) {
     return lex_pp_number();
   }
 
   // Identifier
-  if (is_identifier_start(c)) {
+  if (is_identifier_start(c.value())) {
     auto tok = lex_identifier();
 
     // Track preprocessor directive context
@@ -203,7 +203,7 @@ constexpr PPToken Lexer::lex_newline() {
 constexpr PPToken Lexer::lex_whitespace() {
   auto loc = current_location();
   auto start = pos_;
-  while (!at_end() && is_whitespace(current()) && current() != '\n') {
+  while (!at_end() && is_whitespace(current().value()) && current() != '\n') {
     advance();
   }
   return make_token(PPTokenKind::Whitespace, start, loc);
@@ -212,7 +212,7 @@ constexpr PPToken Lexer::lex_whitespace() {
 constexpr PPToken Lexer::lex_header_name() {
   auto loc = current_location();
   auto start = pos_;
-  char delim = current();  // < or "
+  char delim = current().value();  // < or "
   char end_delim = (delim == '<') ? '>' : '"';
   advance();  // skip opening delimiter
 
@@ -232,7 +232,7 @@ constexpr PPToken Lexer::lex_identifier() {
   auto loc = current_location();
   auto start = pos_;
   advance();  // consume first character
-  while (!at_end() && is_identifier_continue(current())) {
+  while (!at_end() && is_identifier_continue(current().value())) {
     advance();
   }
   return make_token(PPTokenKind::Identifier, start, loc);
@@ -263,17 +263,17 @@ constexpr PPToken Lexer::lex_pp_number() {
   advance();  // consume first digit
 
   while (!at_end()) {
-    char c = current();
+    auto c = current();
 
-    if (is_digit(c) || is_identifier_continue(c) || c == '.') {
+    if (is_digit(c.value()) || is_identifier_continue(c.value()) || c == '.') {
       advance();
       continue;
     }
 
     // digit separator: '
     if (c == '\'' && !at_end()) {
-      char next_c = peek_char();
-      if (is_digit(next_c) || is_identifier_start(next_c)) {
+      auto next_c = peek_char();
+      if (next_c && (is_digit(next_c.value()) || is_identifier_start(next_c.value()))) {
         advance();  // consume '
         advance();  // consume digit/nondigit
         continue;
@@ -308,7 +308,7 @@ constexpr PPToken Lexer::lex_string_or_char_literal(std::size_t prefix_len) {
     advance();  // skip R
   }
 
-  char quote = current();  // " or '
+  char quote = current().value();  // " or '
   advance();               // skip opening quote
 
   if (is_raw && quote == '"') {
@@ -376,7 +376,7 @@ constexpr PPToken Lexer::lex_string_or_char_literal(std::size_t prefix_len) {
 constexpr PPToken Lexer::lex_op_or_punc() {
   auto loc = current_location();
   auto start = pos_;
-  char c = current();
+  char c = current().value();
   advance();
 
   // Multi-character operators — try longest match

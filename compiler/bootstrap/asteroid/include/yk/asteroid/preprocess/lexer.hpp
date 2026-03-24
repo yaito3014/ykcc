@@ -1,6 +1,7 @@
 #ifndef YK_ASTEROID_PREPROCESS_LEXER_HPP
 #define YK_ASTEROID_PREPROCESS_LEXER_HPP
 
+#include <yk/asteroid/nullable_char.hpp>
 #include <yk/asteroid/preprocess/token.hpp>
 
 #include <cstddef>
@@ -35,9 +36,10 @@ private:
   bool after_include_keyword_ = false;
 
   // Character access with line-splicing (phase 2: backslash-newline removal)
-  constexpr char current() const noexcept;
-  constexpr char peek_char(std::size_t offset = 1) const noexcept;
-  constexpr char advance() noexcept;
+  // Returns null nullable_char at end of input.
+  constexpr nullable_char current() const noexcept;
+  constexpr nullable_char peek_char(std::size_t offset = 1) const noexcept;
+  constexpr nullable_char advance() noexcept;
   constexpr void skip(std::size_t count = 1) noexcept;
 
   // Resolve position past any backslash-newline sequences
