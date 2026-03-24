@@ -1,0 +1,4 @@
+add_executable(test_preprocess_lexer preprocess_lexer.cpp)
+target_compile_features(test_preprocess_lexer PRIVATE cxx_std_23)
+target_link_libraries(test_preprocess_lexer PRIVATE yk::asteroid)
+add_test(NAME preprocess_lexer COMMAND test_preprocess_lexer)
