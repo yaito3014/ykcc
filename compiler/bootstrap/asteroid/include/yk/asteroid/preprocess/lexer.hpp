@@ -81,7 +81,7 @@ private:
 template<bool Const>
 constexpr bool operator==(lexer_iterator<Const> const& it, std::default_sentinel_t) noexcept
 {
-  return it.current_.has_value();
+  return !it.current_.has_value();
 }
 
 }  // namespace detail

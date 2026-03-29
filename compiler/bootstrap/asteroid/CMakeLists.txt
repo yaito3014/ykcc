@@ -12,15 +12,14 @@ target_sources(
         FILE_SET yk_asteroid_headers
             TYPE HEADERS
             BASE_DIRS include
-            FILES
-                include/yk/asteroid/preprocess/lexer.hpp
+            FILES include/yk/asteroid/preprocess/lexer.hpp
 )
 
 add_library(yk::asteroid ALIAS asteroid)
 
-option(YK_ASTERDOID_BUILD_TESTING "build testing" ${PROJECT_IS_TOP_LEVEL})
+option(YK_ASTEROID_BUILD_TESTING "build testing" ${PROJECT_IS_TOP_LEVEL})
 
-if(YK_ASTERDOID_BUILD_TESTING)
+if(YK_ASTEROID_BUILD_TESTING)
     include(CTest)
     add_subdirectory(test)
 endif()

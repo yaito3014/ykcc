@@ -17,5 +17,6 @@ function(yk_asteroid_add_test test_name)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
-yk_asteroid_add_test(preprocess_lexer)
+yk_asteroid_add_test(preprocessing_lexer)
 yk_asteroid_add_test(sequence)
+yk_asteroid_add_test(separated_by)

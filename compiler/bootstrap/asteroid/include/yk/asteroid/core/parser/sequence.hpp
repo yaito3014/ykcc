@@ -1,7 +1,7 @@
 #ifndef YK_ASTEROID_CORE_PARSER_SEQUENCE_HPP
 #define YK_ASTEROID_CORE_PARSER_SEQUENCE_HPP
 
-#include "yk/asteroid/core/parser/common.hpp"
+#include <yk/asteroid/core/parser/common.hpp>
 
 #include <tuple>
 #include <utility>
@@ -83,25 +83,29 @@ struct wrap_by_sequence_result_impl<sequence_result<Ts...>> {
 };
 
 template<class T>
-constexpr decltype(auto) wrap_by_sequence_result(T&& t)
+constexpr decltype(auto) wrap_by_sequence_result(T&& t) noexcept(noexcept(wrap_by_sequence_result_impl<std::remove_cvref_t<T>>::apply(std::forward<T>(t))))
 {
   return wrap_by_sequence_result_impl<std::remove_cvref_t<T>>::apply(std::forward<T>(t));
 }
 
 template<class... Ts>
-constexpr sequence_result<Ts...> sequence_result_from_tuple(std::tuple<Ts...> const& t)
+constexpr sequence_result<Ts...> sequence_result_from_tuple(std::tuple<Ts...> const& t) noexcept(noexcept(std::make_from_tuple<sequence_result<Ts...>>(t)))
 {
   return std::make_from_tuple<sequence_result<Ts...>>(t);
 }
 
 template<class... Ts>
-constexpr sequence_result<Ts...> sequence_result_from_tuple(std::tuple<Ts...>&& t)
+constexpr sequence_result<Ts...> sequence_result_from_tuple(std::tuple<Ts...>&& t) noexcept(
+    noexcept(std::make_from_tuple<sequence_result<Ts...>>(std::move(t)))
+)
 {
   return std::make_from_tuple<sequence_result<Ts...>>(std::move(t));
 }
 
 template<class T, class U>
-constexpr auto merge_sequence_result(T&& t, U&& u)
+constexpr auto merge_sequence_result(T&& t, U&& u) noexcept(noexcept(detail::sequence_result_from_tuple(
+    std::tuple_cat(detail::wrap_by_sequence_result(std::forward<T>(t)).base(), detail::wrap_by_sequence_result(std::forward<U>(u)).base())
+)))
 {
   return detail::sequence_result_from_tuple(
       std::tuple_cat(detail::wrap_by_sequence_result(std::forward<T>(t)).base(), detail::wrap_by_sequence_result(std::forward<U>(u)).base())
@@ -113,13 +117,19 @@ constexpr auto merge_sequence_result(T&& t, U&& u)
 template<parser LeftParser, parser RightParser>
 class sequence {
 public:
+  using value_type = detail::merge_sequence_result_t<parser_value_t<LeftParser>, parser_value_t<RightParser>>;
+
   template<class LeftParserT, class RightParserT>
-  constexpr sequence(LeftParserT&& left, RightParserT&& right) : left_(std::forward<LeftParserT>(left)), right_(std::forward<RightParserT>(right))
+  constexpr sequence(
+      LeftParserT&& left, RightParserT&& right
+  ) noexcept(std::conjunction_v<std::is_nothrow_constructible<LeftParser, LeftParserT>, std::is_nothrow_constructible<RightParser, RightParserT>>)
+      : left_(std::forward<LeftParserT>(left)), right_(std::forward<RightParserT>(right))
   {
   }
 
-  constexpr auto operator()(std::string_view sv) const noexcept
-      -> parser_result<detail::merge_sequence_result_t<parser_value_t<LeftParser>, parser_value_t<RightParser>>>
+  constexpr parser_result<value_type> operator()(std::string_view sv) const noexcept(
+      noexcept(detail::merge_sequence_result(std::declval<parser_value_t<LeftParser>>(), std::declval<parser_value_t<RightParser>>()))
+  )
   {
     if (auto const left_result = left_(sv)) {
       if (auto const right_result = right_(left_result.rest())) {
