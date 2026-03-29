@@ -1,73 +1,110 @@
 #ifndef YK_ASTEROID_PREPROCESS_LEXER_HPP
 #define YK_ASTEROID_PREPROCESS_LEXER_HPP
 
-#include <yk/asteroid/nullable_char.hpp>
-#include <yk/asteroid/preprocess/token.hpp>
+#include <expected>
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <string_view>
+#include <type_traits>
 
 #include <cstddef>
-#include <string_view>
+#include <cstdint>
 
 namespace yk::asteroid::preprocess {
 
-// Phase 1-3 lexer: decomposes source text into preprocessing tokens.
-// Handles line splicing (phase 2) transparently.
-class Lexer {
+enum class pp_token_kind : std::uint8_t {
+  header_name,
+  identifier,
+  number,
+  character_literal,
+  string_literal,
+  op_or_punc,
+  whitespace,
+  newline,
+  non_whitespace_char,
+};
+
+struct source_location {
+  std::uint32_t line;
+  std::uint32_t column;
+};
+
+struct pp_token {
+  pp_token_kind kind;
+  std::string_view piece;
+  source_location location;
+};
+
+class lexer;
+
+namespace detail {
+
+template<bool Const, class T>
+using maybe_const = std::conditional_t<Const, T const, T>;
+
+template<bool Const>
+class lexer_iterator {
+  using parent_type = maybe_const<Const, lexer>;
+
 public:
-  constexpr explicit Lexer(std::string_view source) noexcept;
+  using value_type = pp_token;
+  using difference_type = std::ptrdiff_t;
 
-  // Returns the next pp-token. Returns EndOfFile when done.
-  constexpr PPToken next();
+  constexpr lexer_iterator() noexcept = default;
 
-  // Peek at the next pp-token without consuming it.
-  constexpr PPToken peek();
-
-  // True if all input has been consumed.
-  constexpr bool at_end() const noexcept;
+  constexpr value_type const& operator*() const noexcept { return *current_; }
+  constexpr value_type const* operator->() const noexcept { return &*current_; }
 
 private:
+  friend lexer;
+
+  constexpr explicit lexer_iterator(parent_type* parent) : parent_(parent) {}
+
+  template<bool Const_>
+  friend constexpr bool operator==(lexer_iterator<Const_> const&, std::default_sentinel_t) noexcept;
+
+  struct entry {
+    pp_token token;
+    std::string_view::iterator parsed_point_;
+  };
+
+  constexpr std::optional<entry> next() const noexcept
+  {
+    return std::nullopt;  // TODO: implement
+  }
+
+  parent_type* parent_ = nullptr;
+  std::optional<entry> current_ = std::nullopt;
+};
+
+template<bool Const>
+constexpr bool operator==(lexer_iterator<Const> const& it, std::default_sentinel_t) noexcept
+{
+  return it.current_.has_value();
+}
+
+}  // namespace detail
+
+class lexer {
+public:
+  using iterator = detail::lexer_iterator</* Const = */ false>;
+  using const_iterator = detail::lexer_iterator</* Const = */ true>;
+
+  constexpr explicit lexer(std::string_view source) noexcept : source_(source) {}
+
+  constexpr iterator begin() noexcept { return iterator{this}; }
+  constexpr const_iterator begin() const noexcept { return const_iterator{this}; }
+
+  constexpr std::default_sentinel_t end() const noexcept { return {}; }
+
+private:
+  friend iterator;
+  friend const_iterator;
+
   std::string_view source_;
-  std::size_t pos_ = 0;
-  std::uint32_t line_ = 1;
-  std::uint32_t column_ = 1;
-
-  // Whether we are at the start of a line (for #include header-name context).
-  // Set to true after a newline, cleared after first non-whitespace token.
-  bool after_directive_hash_ = false;
-  bool after_include_keyword_ = false;
-
-  // Character access with line-splicing (phase 2: backslash-newline removal)
-  // Returns null nullable_char at end of input.
-  constexpr nullable_char current() const noexcept;
-  constexpr nullable_char peek_char(std::size_t offset = 1) const noexcept;
-  constexpr nullable_char advance() noexcept;
-  constexpr void skip(std::size_t count = 1) noexcept;
-
-  // Resolve position past any backslash-newline sequences
-  constexpr std::size_t resolve(std::size_t pos) const noexcept;
-
-  constexpr SourceLocation current_location() const noexcept;
-  constexpr PPToken make_token(PPTokenKind kind, std::size_t start, SourceLocation loc) const noexcept;
-
-  // Lexing routines for each pp-token kind
-  constexpr PPToken lex_header_name();
-  constexpr PPToken lex_identifier();
-  constexpr PPToken lex_pp_number();
-  constexpr PPToken lex_string_or_char_literal(std::size_t prefix_len);
-  constexpr PPToken lex_whitespace();
-  constexpr PPToken lex_newline();
-  constexpr PPToken lex_op_or_punc();
-
-  // Helpers
-  constexpr bool try_skip_line_comment() noexcept;
-  constexpr bool try_skip_block_comment() noexcept;
-  static constexpr bool is_identifier_start(char c) noexcept;
-  static constexpr bool is_identifier_continue(char c) noexcept;
-  static constexpr bool is_digit(char c) noexcept;
-  static constexpr bool is_whitespace(char c) noexcept;
 };
 
 }  // namespace yk::asteroid::preprocess
-
-#include <yk/asteroid/preprocess/lexer.ipp>
 
 #endif  // YK_ASTEROID_PREPROCESS_LEXER_HPP
