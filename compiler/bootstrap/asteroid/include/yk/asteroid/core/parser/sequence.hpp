@@ -71,21 +71,21 @@ template<class T, class U>
 using merge_sequence_result_t = detail::merge_sequence_result_t_impl<T, U>::type;
 
 template<class T>
-struct wrap_by_sequence_result_impl {
+struct wrap_into_sequence_result_impl {
   static constexpr sequence_result<T> apply(T const& t) noexcept(std::is_nothrow_copy_constructible_v<T>) { return sequence_result<T>{t}; }
   static constexpr sequence_result<T> apply(T&& t) noexcept(std::is_nothrow_move_constructible_v<T>) { return sequence_result<T>{std::move(t)}; }
 };
 
 template<class... Ts>
-struct wrap_by_sequence_result_impl<sequence_result<Ts...>> {
+struct wrap_into_sequence_result_impl<sequence_result<Ts...>> {
   static constexpr sequence_result<Ts...> const& apply(sequence_result<Ts...> const& sr) noexcept { return sr; }
   static constexpr sequence_result<Ts...> apply(sequence_result<Ts...>&& sr) noexcept(std::is_move_constructible_v<sequence_result<Ts...>>) { return sr; }
 };
 
 template<class T>
-constexpr decltype(auto) wrap_by_sequence_result(T&& t) noexcept(noexcept(wrap_by_sequence_result_impl<std::remove_cvref_t<T>>::apply(std::forward<T>(t))))
+constexpr decltype(auto) wrap_into_sequence_result(T&& t) noexcept(noexcept(wrap_into_sequence_result_impl<std::remove_cvref_t<T>>::apply(std::forward<T>(t))))
 {
-  return wrap_by_sequence_result_impl<std::remove_cvref_t<T>>::apply(std::forward<T>(t));
+  return wrap_into_sequence_result_impl<std::remove_cvref_t<T>>::apply(std::forward<T>(t));
 }
 
 template<class... Ts>
@@ -104,11 +104,11 @@ constexpr sequence_result<Ts...> sequence_result_from_tuple(std::tuple<Ts...>&& 
 
 template<class T, class U>
 constexpr auto merge_sequence_result(T&& t, U&& u) noexcept(noexcept(detail::sequence_result_from_tuple(
-    std::tuple_cat(detail::wrap_by_sequence_result(std::forward<T>(t)).base(), detail::wrap_by_sequence_result(std::forward<U>(u)).base())
+    std::tuple_cat(detail::wrap_into_sequence_result(std::forward<T>(t)).base(), detail::wrap_into_sequence_result(std::forward<U>(u)).base())
 )))
 {
   return detail::sequence_result_from_tuple(
-      std::tuple_cat(detail::wrap_by_sequence_result(std::forward<T>(t)).base(), detail::wrap_by_sequence_result(std::forward<U>(u)).base())
+      std::tuple_cat(detail::wrap_into_sequence_result(std::forward<T>(t)).base(), detail::wrap_into_sequence_result(std::forward<U>(u)).base())
   );
 }
 
@@ -132,13 +132,13 @@ public:
   )
   {
     if (auto const left_result = left_(sv)) {
-      if (auto const right_result = right_(left_result.rest())) {
-        return {detail::merge_sequence_result(left_result.value(), right_result.value()), right_result.rest()};
+      if (auto const right_result = right_(std::string_view(left_result.parsed_point(), sv.end()))) {
+        return {detail::merge_sequence_result(left_result.value(), right_result.value()), right_result.parsed_point()};
       } else {
-        return {right_result.rest()};
+        return parse_failure;
       }
     } else {
-      return {left_result.rest()};
+      return parse_failure;
     }
   }
 

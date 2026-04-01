@@ -3,6 +3,7 @@
 
 #include <concepts>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -13,32 +14,42 @@ class bad_parser_result_access : public std::exception {
   virtual char const* what() const noexcept override { return "bad parser_result access"; }
 };
 
+struct parse_failure_t {
+  constexpr explicit parse_failure_t() noexcept = default;
+};
+
+inline constexpr parse_failure_t parse_failure{};
+
 template<class T>
 class parser_result {
+  struct parsed {
+    T val;
+    std::string_view::iterator parsed_point;
+  };
+
 public:
   using value_type = T;
 
-  constexpr parser_result(T const& val, std::string_view rest) : val_(val), rest_(rest) {}
-  constexpr parser_result(T&& val, std::string_view rest) : val_(std::move(val)), rest_(rest) {}
+  constexpr parser_result(T const& val, std::string_view::iterator parsed_point) : result_(parsed{val, parsed_point}) {}
+  constexpr parser_result(T&& val, std::string_view::iterator parsed_point) : result_(parsed{std::move(val), parsed_point}) {}
 
-  constexpr parser_result(std::string_view rest) : rest_(rest) {}
+  constexpr parser_result(parse_failure_t) noexcept {}
 
-  constexpr value_type const& operator*() const& noexcept { return *val_; }
-  constexpr value_type&& operator*() && noexcept { return *std::move(val_); }
+  constexpr value_type const& operator*() const& noexcept { return result_->val; }
+  constexpr value_type&& operator*() && noexcept { return std::move(result_->val); }
 
-  constexpr value_type const* operator->() const noexcept { return val_.operator->(); }
+  constexpr value_type const* operator->() const noexcept { return std::addressof(result_->val); }
 
-  constexpr value_type const& value() const& { return has_value() ? *val_ : throw bad_parser_result_access{}; }
-  constexpr value_type&& value() && { return has_value() ? *std::move(val_) : throw bad_parser_result_access{}; }
+  constexpr value_type const& value() const& { return has_value() ? result_->val : throw bad_parser_result_access{}; }
+  constexpr value_type&& value() && { return has_value() ? std::move(result_->val) : throw bad_parser_result_access{}; }
 
-  constexpr std::string_view rest() const noexcept { return rest_; }
+  constexpr std::string_view::iterator parsed_point() const { return has_value() ? result_->parsed_point : throw bad_parser_result_access{}; }
 
-  constexpr bool has_value() const noexcept { return val_.has_value(); }
+  constexpr bool has_value() const noexcept { return result_.has_value(); }
   constexpr explicit operator bool() const noexcept { return has_value(); }
 
 private:
-  std::optional<T> val_;
-  std::string_view rest_;
+  std::optional<parsed> result_;
 };
 
 namespace detail {

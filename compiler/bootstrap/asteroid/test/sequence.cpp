@@ -2,8 +2,6 @@
 
 #include <yk/asteroid/core/parser/sequence.hpp>
 
-
-
 TEST_CASE("sequence")
 {
   yk::asteroid::parser auto const left = numeric_parser<int>{};

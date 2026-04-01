@@ -1,9 +1,11 @@
 #ifndef YK_ASTEROID_PREPROCESS_LEXER_HPP
 #define YK_ASTEROID_PREPROCESS_LEXER_HPP
 
-#include <expected>
+#include <yk/asteroid/preprocess/identifier.hpp>
+#include <yk/asteroid/preprocess/op_or_punc.hpp>
+#include <yk/asteroid/preprocess/pp_number.hpp>
+
 #include <iterator>
-#include <memory>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -40,6 +42,8 @@ class lexer;
 
 namespace detail {
 
+inline constexpr std::string_view whitespace_chars = " \t\v\f";
+
 template<bool Const, class T>
 using maybe_const = std::conditional_t<Const, T const, T>;
 
@@ -56,26 +60,77 @@ public:
   constexpr value_type const& operator*() const noexcept { return *current_; }
   constexpr value_type const* operator->() const noexcept { return &*current_; }
 
+  constexpr lexer_iterator& operator++()
+  {
+    current_ = next();
+    return *this;
+  }
+
+  constexpr lexer_iterator operator++(int)
+  {
+    auto tmp = *this;
+    ++*this;
+    return tmp;
+  }
+
 private:
   friend lexer;
 
-  constexpr explicit lexer_iterator(parent_type* parent) : parent_(parent) {}
+  // next() -> make_token() -> next_location() reads current_, so current_ must be initialized (to nullopt) before next() runs.
+  constexpr explicit lexer_iterator(parent_type* parent) : parent_(parent) { current_ = next(); }
 
   template<bool Const_>
   friend constexpr bool operator==(lexer_iterator<Const_> const&, std::default_sentinel_t) noexcept;
 
-  struct entry {
-    pp_token token;
-    std::string_view::iterator parsed_point_;
-  };
-
-  constexpr std::optional<entry> next() const noexcept
+  constexpr std::string_view remaining() const noexcept
   {
-    return std::nullopt;  // TODO: implement
+    auto const begin = current_ ? current_->piece.end() : parent_->source_.begin();
+    return std::string_view(begin, parent_->source_.end());
+  }
+
+  constexpr source_location next_location() const noexcept
+  {
+    if (!current_) return {1, 1};
+    auto const& prev = *current_;
+    if (prev.kind == pp_token_kind::newline) return {prev.location.line + 1, 1};
+    return {prev.location.line, prev.location.column + static_cast<std::uint32_t>(prev.piece.size())};
+  }
+
+  constexpr pp_token make_token(pp_token_kind kind, std::string_view piece) const noexcept { return pp_token{kind, piece, next_location()}; }
+
+  constexpr std::optional<pp_token> next() noexcept
+  {
+    auto const rest = remaining();
+    if (rest.empty()) return std::nullopt;
+
+    if (rest[0] == '\n') {
+      return make_token(pp_token_kind::newline, rest.substr(0, 1));
+    }
+
+    if (whitespace_chars.contains(rest[0])) {
+      auto const end = rest.find_first_not_of(whitespace_chars);
+      auto const len = end != std::string_view::npos ? end : rest.size();
+      return make_token(pp_token_kind::whitespace, rest.substr(0, len));
+    }
+
+    if (auto res = identifier_parser{}(rest)) {
+      auto const kind = is_alternative_token(res.value()) ? pp_token_kind::op_or_punc : pp_token_kind::identifier;
+      return make_token(kind, res.value());
+    }
+
+    if (auto res = pp_number_parser{}(rest)) {
+      return make_token(pp_token_kind::number, res.value());
+    }
+
+    if (auto res = op_or_punc_parser{}(rest)) {
+      return make_token(pp_token_kind::op_or_punc, res.value());
+    }
+
+    return make_token(pp_token_kind::non_whitespace_char, rest.substr(0, 1));
   }
 
   parent_type* parent_ = nullptr;
-  std::optional<entry> current_ = std::nullopt;
+  std::optional<pp_token> current_ = std::nullopt;
 };
 
 template<bool Const>

@@ -15,9 +15,9 @@ struct numeric_parser {
     char const* se = std::to_address(sv.cend());
     T result;
     if (auto [ptr, ec] = std::from_chars(it, se, result); ec == std::errc{}) {
-      return {result, sv.substr(ptr - it)};
+      return {result, sv.begin() + (ptr - it)};
     } else {
-      return {sv};
+      return yk::asteroid::parse_failure;
     }
   };
 };
@@ -27,9 +27,9 @@ struct alphabet_parser {
   {
     std::size_t const pos = sv.find_first_not_of("abcdefghijklmnopqrstuvwxyz");
     if (pos == 0) {
-      return {sv};
+      return yk::asteroid::parse_failure;
     } else {
-      return {std::string(sv.substr(0, pos)), sv.substr(pos == std::string_view::npos ? sv.size() : pos)};
+      return {std::string(sv.substr(0, pos)), sv.begin() + (pos == std::string_view::npos ? sv.size() : pos)};
     }
   };
 };

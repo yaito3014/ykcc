@@ -6,9 +6,9 @@ struct comma_parser {
   constexpr yk::asteroid::parser_result<char> operator()(std::string_view sv) const noexcept
   {
     if (sv.starts_with(',')) {
-      return {',', sv.substr(1)};
+      return {',', sv.begin() + 1};
     } else {
-      return {sv};
+      return yk::asteroid::parse_failure;
     }
   }
 };

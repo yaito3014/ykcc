@@ -26,21 +26,21 @@ public:
   {
     if (auto const first = subject_(sv)) {
       std::vector<parser_value_t<Subject>> result{first.value()};
-      std::string_view rest = first.rest();
+      std::string_view::iterator parsed_to = first.parsed_point();
       while (true) {
-        if (auto const sep = separator_(rest)) {
-          if (auto const elem = subject_(sep.rest())) {
-            result.push_back(std::move(elem).value());
-            rest = elem.rest();
+        if (auto const sep = separator_(std::string_view(parsed_to, sv.end()))) {
+          if (auto const elem = subject_(std::string_view(sep.parsed_point(), sv.end()))) {
+            result.emplace_back(std::move(elem).value());
+            parsed_to = elem.parsed_point();
           } else {
-            return {elem.rest()};
+            return parse_failure;
           }
         } else {
-          return {result, sep.rest()};
+          return {result, parsed_to};
         }
       }
     } else {
-      return {sv};
+      return parse_failure;
     }
   }
 
