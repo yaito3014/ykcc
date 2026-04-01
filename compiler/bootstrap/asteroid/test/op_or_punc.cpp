@@ -50,8 +50,8 @@ TEST_CASE("op_or_punc: non-match")
 {
   yk::asteroid::preprocess::op_or_punc_parser p{};
 
-  CHECK_FALSE(p("@").has_value());
-  CHECK_FALSE(p("123").has_value());
-  CHECK_FALSE(p("abc").has_value());
-  CHECK_FALSE(p("").has_value());
+  CHECK(!p("@").has_value());
+  CHECK(!p("123").has_value());
+  CHECK(!p("abc").has_value());
+  CHECK(!p("").has_value());
 }

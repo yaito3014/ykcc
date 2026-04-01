@@ -61,7 +61,7 @@ TEST_CASE("pp_number: non-match")
   yk::asteroid::preprocess::pp_number_parser pp_num{};
   std::string_view input = "abc";
   auto const res = pp_num(input);
-  CHECK_FALSE(res.has_value());
+  CHECK(!res.has_value());
 }
 
 TEST_CASE("pp_number: dot without digit")
@@ -69,7 +69,7 @@ TEST_CASE("pp_number: dot without digit")
   yk::asteroid::preprocess::pp_number_parser pp_num{};
   std::string_view input = ".abc";
   auto const res = pp_num(input);
-  CHECK_FALSE(res.has_value());
+  CHECK(!res.has_value());
 }
 
 TEST_CASE("pp_number: hex float exponent")

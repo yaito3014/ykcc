@@ -39,7 +39,7 @@ TEST_CASE("alternative: neither matches")
   yk::asteroid::alternative alt{alphabet_parser{}, upper_parser{}};
   std::string_view input = "123";
   auto const res = alt(input);
-  CHECK_FALSE(res.has_value());
+  CHECK(!res.has_value());
 }
 
 TEST_CASE("alternative: different types produces variant")
