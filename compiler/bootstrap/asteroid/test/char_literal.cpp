@@ -1,6 +1,6 @@
 #include "test.hpp"
 
-#include <yk/asteroid/preprocess/char_literal.hpp>
+#include <yk/asteroid/preprocess/literal.hpp>
 
 TEST_CASE("char_literal: basic")
 {

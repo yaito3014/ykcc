@@ -1,12 +1,11 @@
 #ifndef YK_ASTEROID_PREPROCESS_LEXER_HPP
 #define YK_ASTEROID_PREPROCESS_LEXER_HPP
 
-#include <yk/asteroid/preprocess/char_literal.hpp>
 #include <yk/asteroid/preprocess/header_name.hpp>
 #include <yk/asteroid/preprocess/identifier.hpp>
+#include <yk/asteroid/preprocess/literal.hpp>
 #include <yk/asteroid/preprocess/op_or_punc.hpp>
 #include <yk/asteroid/preprocess/pp_number.hpp>
-#include <yk/asteroid/preprocess/string_literal.hpp>
 
 #include <iterator>
 #include <optional>
