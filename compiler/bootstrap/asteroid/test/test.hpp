@@ -26,7 +26,7 @@ struct alphabet_parser {
   constexpr yk::asteroid::parser_result<std::string> operator()(std::string_view sv) const
   {
     std::size_t const pos = sv.find_first_not_of("abcdefghijklmnopqrstuvwxyz");
-    if (pos == 0) {
+    if (sv.empty() || pos == 0) {
       return yk::asteroid::parse_failure;
     } else {
       return {std::string(sv.substr(0, pos)), sv.begin() + (pos == std::string_view::npos ? sv.size() : pos)};
