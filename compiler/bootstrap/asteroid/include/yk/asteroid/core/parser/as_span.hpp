@@ -9,29 +9,29 @@
 
 namespace yk::asteroid {
 
-template<parser P>
+template<parser Subject>
 class as_span_parser {
 public:
-  template<class PT>
-  constexpr as_span_parser(PT&& inner) noexcept(std::is_nothrow_constructible_v<P, PT>) : inner_(std::forward<PT>(inner))
+  template<class SubjectT>
+  constexpr as_span_parser(SubjectT&& subject) noexcept(std::is_nothrow_constructible_v<Subject, SubjectT>) : subject_(std::forward<SubjectT>(subject))
   {
   }
 
   constexpr parser_result<std::string_view> operator()(std::string_view sv) const
   {
-    if (auto res = inner_(sv)) {
+    if (auto res = subject_(sv)) {
       return {std::string_view(sv.begin(), res.parsed_point()), res.parsed_point()};
     }
     return parse_failure;
   }
 
 private:
-  [[no_unique_address]] P inner_;
+  [[no_unique_address]] Subject subject_;
 };
 
-template<class PT>
-  requires parser<std::remove_cvref_t<PT>>
-as_span_parser(PT&&) -> as_span_parser<std::remove_cvref_t<PT>>;
+template<class SubjectT>
+  requires parser<std::remove_cvref_t<SubjectT>>
+as_span_parser(SubjectT&&) -> as_span_parser<std::remove_cvref_t<SubjectT>>;
 
 }  // namespace yk::asteroid
 
