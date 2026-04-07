@@ -17,7 +17,7 @@ TEST_CASE("separated_by")
 {
   yk::asteroid::parser auto subject = numeric_parser<int>{};
   yk::asteroid::parser auto comma = comma_parser{};
-  yk::asteroid::separated_by sep_by{subject, comma};
+  yk::asteroid::separated_by_parser sep_by{subject, comma};
   auto const res = sep_by("12,345,6789");
   REQUIRE(res.has_value());
   auto const val = *res;

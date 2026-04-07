@@ -18,7 +18,7 @@ struct upper_parser {
 
 TEST_CASE("alternative: left matches")
 {
-  yk::asteroid::alternative alt{alphabet_parser{}, upper_parser{}};
+  yk::asteroid::alternative_parser alt{alphabet_parser{}, upper_parser{}};
   std::string_view input = "abc123";
   auto const res = alt(input);
   REQUIRE(res.has_value());
@@ -27,7 +27,7 @@ TEST_CASE("alternative: left matches")
 
 TEST_CASE("alternative: right matches")
 {
-  yk::asteroid::alternative alt{alphabet_parser{}, upper_parser{}};
+  yk::asteroid::alternative_parser alt{alphabet_parser{}, upper_parser{}};
   std::string_view input = "ABC123";
   auto const res = alt(input);
   REQUIRE(res.has_value());
@@ -36,7 +36,7 @@ TEST_CASE("alternative: right matches")
 
 TEST_CASE("alternative: neither matches")
 {
-  yk::asteroid::alternative alt{alphabet_parser{}, upper_parser{}};
+  yk::asteroid::alternative_parser alt{alphabet_parser{}, upper_parser{}};
   std::string_view input = "123";
   auto const res = alt(input);
   CHECK(!res.has_value());
@@ -44,7 +44,7 @@ TEST_CASE("alternative: neither matches")
 
 TEST_CASE("alternative: different types produces variant")
 {
-  yk::asteroid::alternative alt{numeric_parser<int>{}, alphabet_parser{}};
+  yk::asteroid::alternative_parser alt{numeric_parser<int>{}, alphabet_parser{}};
   std::string_view input = "42rest";
   auto const res = alt(input);
   REQUIRE(res.has_value());
@@ -60,7 +60,7 @@ TEST_CASE("alternative: different types produces variant")
 
 TEST_CASE("alternative: left takes priority")
 {
-  yk::asteroid::alternative alt{alphabet_parser{}, alphabet_parser{}};
+  yk::asteroid::alternative_parser alt{alphabet_parser{}, alphabet_parser{}};
   std::string_view input = "abc";
   auto const res = alt(input);
   REQUIRE(res.has_value());

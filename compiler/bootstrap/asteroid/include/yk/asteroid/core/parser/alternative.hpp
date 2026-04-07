@@ -27,12 +27,12 @@ using alternative_value_t = alternative_value<L, R>::type;
 }  // namespace detail
 
 template<parser LeftParser, parser RightParser>
-class alternative {
+class alternative_parser {
 public:
   using value_type = detail::alternative_value_t<parser_value_t<LeftParser>, parser_value_t<RightParser>>;
 
   template<class LeftParserT, class RightParserT>
-  constexpr alternative(
+  constexpr alternative_parser(
       LeftParserT&& left, RightParserT&& right
   ) noexcept(std::conjunction_v<std::is_nothrow_constructible<LeftParser, LeftParserT>, std::is_nothrow_constructible<RightParser, RightParserT>>)
       : left_(std::forward<LeftParserT>(left)), right_(std::forward<RightParserT>(right))
@@ -65,8 +65,20 @@ private:
   [[no_unique_address]] RightParser right_;
 };
 
-template<parser LeftParserT, parser RightParserT>
-alternative(LeftParserT&&, RightParserT&&) -> alternative<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>>;
+template<class LeftParserT, class RightParserT>
+  requires parser<std::remove_cvref_t<LeftParserT>> && parser<std::remove_cvref_t<RightParserT>>
+alternative_parser(LeftParserT&&, RightParserT&&) -> alternative_parser<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>>;
+
+inline namespace parser_ops {
+
+template<class LeftParserT, class RightParserT>
+  requires parser<std::remove_cvref_t<LeftParserT>> && parser<std::remove_cvref_t<RightParserT>>
+constexpr alternative_parser<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>> operator|(LeftParserT&& left, RightParserT&& right)
+{
+  return {std::forward<LeftParserT>(left), std::forward<RightParserT>(right)};
+}
+
+}  // namespace parser_ops
 
 }  // namespace yk::asteroid
 

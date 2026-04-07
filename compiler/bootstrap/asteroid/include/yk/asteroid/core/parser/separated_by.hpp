@@ -10,12 +10,12 @@
 namespace yk::asteroid {
 
 template<parser Subject, parser Separator>
-class separated_by {
+class separated_by_parser {
 public:
   using value_type = std::vector<parser_value_t<Subject>>;
 
   template<class SubjectT, class SeparatorT>
-  constexpr separated_by(
+  constexpr separated_by_parser(
       SubjectT&& main, SeparatorT&& sub
   ) noexcept(std::conjunction_v<std::is_nothrow_constructible<Subject, SubjectT>, std::is_nothrow_constructible<Separator, SeparatorT>>)
       : subject_(std::forward<SubjectT>(main)), separator_(std::forward<SeparatorT>(sub))
@@ -49,8 +49,20 @@ private:
   [[no_unique_address]] Separator separator_;
 };
 
-template<parser SubjectT, parser SeparatorT>
-separated_by(SubjectT&&, SeparatorT&&) -> separated_by<std::remove_cvref_t<SubjectT>, std::remove_cvref_t<SeparatorT>>;
+template<class SubjectT, class SeparatorT>
+  requires parser<std::remove_cvref_t<SubjectT>> && parser<std::remove_cvref_t<SeparatorT>>
+separated_by_parser(SubjectT&&, SeparatorT&&) -> separated_by_parser<std::remove_cvref_t<SubjectT>, std::remove_cvref_t<SeparatorT>>;
+
+inline namespace parser_ops {
+
+template<class SubjectT, class SeparatorT>
+  requires parser<std::remove_cvref_t<SubjectT>> && parser<std::remove_cvref_t<SeparatorT>>
+constexpr separated_by_parser<std::remove_cvref_t<SubjectT>, std::remove_cvref_t<SeparatorT>> operator%(SubjectT&& subject, SeparatorT&& separator)
+{
+  return {std::forward<SubjectT>(subject), std::forward<SeparatorT>(separator)};
+}
+
+}  // namespace parser_ops
 
 }  // namespace yk::asteroid
 

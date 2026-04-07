@@ -115,12 +115,12 @@ constexpr auto merge_sequence_result(T&& t, U&& u) noexcept(noexcept(detail::seq
 }  // namespace detail
 
 template<parser LeftParser, parser RightParser>
-class sequence {
+class sequence_parser {
 public:
   using value_type = detail::merge_sequence_result_t<parser_value_t<LeftParser>, parser_value_t<RightParser>>;
 
   template<class LeftParserT, class RightParserT>
-  constexpr sequence(
+  constexpr sequence_parser(
       LeftParserT&& left, RightParserT&& right
   ) noexcept(std::conjunction_v<std::is_nothrow_constructible<LeftParser, LeftParserT>, std::is_nothrow_constructible<RightParser, RightParserT>>)
       : left_(std::forward<LeftParserT>(left)), right_(std::forward<RightParserT>(right))
@@ -149,7 +149,18 @@ private:
 
 template<class LeftParserT, class RightParserT>
   requires parser<std::remove_cvref_t<LeftParserT>> && parser<std::remove_cvref_t<RightParserT>>
-sequence(LeftParserT&&, RightParserT&&) -> sequence<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>>;
+sequence_parser(LeftParserT&&, RightParserT&&) -> sequence_parser<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>>;
+
+inline namespace parser_ops {
+
+template<class LeftParserT, class RightParserT>
+  requires parser<std::remove_cvref_t<LeftParserT>> && parser<std::remove_cvref_t<RightParserT>>
+constexpr sequence_parser<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>> operator>>(LeftParserT&& left, RightParserT&& right)
+{
+  return {std::forward<LeftParserT>(left), std::forward<RightParserT>(right)};
+}
+
+}  // namespace parser_ops
 
 }  // namespace yk::asteroid
 
