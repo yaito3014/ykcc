@@ -147,7 +147,8 @@ private:
   [[no_unique_address]] RightParser right_;
 };
 
-template<parser LeftParserT, parser RightParserT>
+template<class LeftParserT, class RightParserT>
+  requires parser<std::remove_cvref_t<LeftParserT>> && parser<std::remove_cvref_t<RightParserT>>
 sequence(LeftParserT&&, RightParserT&&) -> sequence<std::remove_cvref_t<LeftParserT>, std::remove_cvref_t<RightParserT>>;
 
 }  // namespace yk::asteroid
