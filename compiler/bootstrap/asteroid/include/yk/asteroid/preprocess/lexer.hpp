@@ -121,6 +121,8 @@ public:
 
   constexpr std::size_t position() const noexcept { return pos_; }
 
+  constexpr std::string_view file_name() const noexcept { return file_name_; }
+
 private:
   line_splicer const* splicer_;
   std::string_view file_name_;

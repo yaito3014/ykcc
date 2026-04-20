@@ -18,13 +18,37 @@
 
 namespace yk::asteroid {
 
+struct include_result {
+  std::string path;     // canonical path used for diagnostics and #pragma once
+  std::string content;  // raw file contents (pre-splicing)
+};
+
 template<class Sink = no_diagnostic_sink, class Handler = no_directive_handler>
 class preprocessor {
 public:
   // Resolver signatures for __has_include / __has_embed. Receive the full header
-  // name including delimiters (`<foo.h>` or `"foo.h"`). Default (null) = not found.
+  // name including delimiters (`<foo.h>` or `"foo.h"`). Null = not found.
+  // std::function_ref would allow captures but its operator() is not constexpr
+  // per [func.wrap.ref.class] — type-erased invocation can't be evaluated in a
+  // constant expression, so function_ref is unusable in our compile-time tests.
   using include_resolver_t = bool (*)(std::string_view header_name);
   using embed_resolver_t = int (*)(std::string_view header_name);
+
+  // #include resolver: receives the header name (with delimiters) and the
+  // current file's path; on hit, writes the canonical path and file contents
+  // into the two out-parameters and returns true. Null resolver → #include
+  // errors.
+  //
+  // Why out-parameters instead of returning a struct? gcc-trunk (as of
+  // 16.0.1) fails "dereferencing a null pointer" when a captureless lambda
+  // returning a class type with non-trivial members (std::string,
+  // std::optional<std::string>, …) is called through a function pointer
+  // during constant evaluation. Returning bool sidesteps the bug and keeps
+  // the test idiom `+[](...){ ... }` working.
+  using include_source_t = bool (*)(std::string_view header_name, std::string_view from_file,
+                                     std::string& out_path, std::string& out_content);
+
+  static constexpr std::size_t max_include_depth = 200;
 
   constexpr explicit preprocessor(lexer<Sink>& lx) : lexer_(&lx) {}
 
@@ -37,6 +61,7 @@ public:
 
   constexpr void set_include_resolver(include_resolver_t r) noexcept { include_resolver_ = r; }
   constexpr void set_embed_resolver(embed_resolver_t r) noexcept { embed_resolver_ = r; }
+  constexpr void set_include_source(include_source_t s) noexcept { include_source_ = s; }
 
   constexpr pp_token next()
   {
@@ -92,6 +117,26 @@ private:
     bool saw_else = false;     // has #else been seen (forbids further #elif/#else)
   };
 
+  struct include_frame {
+    std::string path;     // canonical path — backing store for lexer's file_name view
+    std::string content;  // raw source — backing store for splicer's source view
+    line_splicer splicer;
+    lexer<Sink> lx;
+    std::size_t cond_stack_depth_at_push;
+
+    constexpr include_frame(std::string p, std::string c, std::size_t cd, Sink sink)
+        : path(std::move(p)),
+          content(std::move(c)),
+          splicer(std::string_view{content}),
+          lx(splicer, std::string_view{path}, std::move(sink)),
+          cond_stack_depth_at_push(cd) {}
+
+    include_frame(include_frame const&) = delete;
+    include_frame(include_frame&&) = delete;
+    include_frame& operator=(include_frame const&) = delete;
+    include_frame& operator=(include_frame&&) = delete;
+  };
+
   lexer<Sink>* lexer_;
   [[no_unique_address]] Sink sink_{};
   [[no_unique_address]] Handler handler_{};
@@ -99,10 +144,29 @@ private:
   expansion_queue pending_;
   std::vector<std::indirect<std::string>> synth_strings_;
   std::vector<cond_frame> cond_stack_;
+  std::vector<std::unique_ptr<include_frame>> include_stack_;
+  // Popped frames are retired, not destroyed: pp_token spellings and macro
+  // replacement bodies are views into frame content, so the backing storage
+  // must outlive the preprocessor's token stream.
+  std::vector<std::unique_ptr<include_frame>> retired_frames_;
+  std::vector<std::string> pragma_once_paths_;
   include_resolver_t include_resolver_ = nullptr;
   embed_resolver_t embed_resolver_ = nullptr;
+  include_source_t include_source_ = nullptr;
   bool at_line_start_ = true;
   bool eof_emitted_ = false;
+
+  constexpr lexer<Sink>& active_lexer() noexcept
+  {
+    if (!include_stack_.empty()) return include_stack_.back()->lx;
+    return *lexer_;
+  }
+
+  constexpr std::string_view current_file_path() const noexcept
+  {
+    if (!include_stack_.empty()) return std::string_view{include_stack_.back()->path};
+    return lexer_->file_name();
+  }
 
   constexpr bool take_next(pending_token& pt)
   {
@@ -111,17 +175,30 @@ private:
       pending_.erase(pending_.begin());
       return true;
     }
-    auto tok = lexer_->next();
-    if (tok.kind == pp_token_kind::end_of_file) return false;
-    pt.tok = std::move(tok);
-    pt.hideset.clear();
-    return true;
+    while (true) {
+      auto tok = active_lexer().next();
+      if (tok.kind != pp_token_kind::end_of_file) {
+        pt.tok = std::move(tok);
+        pt.hideset.clear();
+        return true;
+      }
+      if (include_stack_.empty()) return false;
+      auto const depth = include_stack_.back()->cond_stack_depth_at_push;
+      if (cond_stack_.size() > depth) {
+        report(diagnostic_level::error, cond_stack_.back().location,
+               "unterminated conditional directive in included file");
+        cond_stack_.resize(depth);
+      }
+      retired_frames_.push_back(std::move(include_stack_.back()));
+      include_stack_.pop_back();
+      at_line_start_ = true;
+    }
   }
 
   constexpr void collect_until_newline(std::vector<pp_token>& out)
   {
     while (true) {
-      auto t = lexer_->next();
+      auto t = active_lexer().next();
       if (t.kind == pp_token_kind::newline || t.kind == pp_token_kind::end_of_file) return;
       out.push_back(t);
     }
@@ -134,7 +211,7 @@ private:
 
     pp_token name_tok;
     do {
-      name_tok = lexer_->next();
+      name_tok = active_lexer().next();
     } while (name_tok.kind == pp_token_kind::whitespace);
 
     if (name_tok.kind == pp_token_kind::newline || name_tok.kind == pp_token_kind::end_of_file) {
@@ -155,11 +232,11 @@ private:
 
     if (directive_expects_header_name(d.kind)) {
       while (true) {
-        if (auto hn = lexer_->try_lex_header_name()) {
+        if (auto hn = active_lexer().try_lex_header_name()) {
           d.tokens.push_back(*hn);
           break;
         }
-        auto t = lexer_->next();
+        auto t = active_lexer().next();
         if (t.kind == pp_token_kind::newline || t.kind == pp_token_kind::end_of_file) {
           handler_(d);
           return;
@@ -185,6 +262,12 @@ private:
         break;
       case directive_kind::undef:
         if (!skipping()) handle_undef(d);
+        break;
+      case directive_kind::include:
+        if (!skipping()) handle_include(d);
+        break;
+      case directive_kind::pragma:
+        if (!skipping()) handle_pragma(d);
         break;
       default:
         break;
@@ -434,6 +517,115 @@ private:
     macros_.undefine(toks[i].spelling);
   }
 
+  constexpr void handle_include(parsed_directive const& d)
+  {
+    auto const& toks = d.tokens;
+    std::size_t i = 0;
+    while (i < toks.size() && toks[i].kind == pp_token_kind::whitespace) ++i;
+    if (i >= toks.size()) {
+      report(diagnostic_level::error, d.location, "#include expects a header name");
+      return;
+    }
+
+    std::string header = extract_header_name(toks, i, d.location);
+    if (header.empty()) return;
+
+    if (!include_source_) {
+      report(diagnostic_level::error, d.location, "#include not supported: no source resolver configured");
+      return;
+    }
+
+    std::string resolved_path;
+    std::string resolved_content;
+    bool const ok = include_source_(
+        std::string_view{header}, current_file_path(),
+        resolved_path, resolved_content);
+    if (!ok) {
+      report(diagnostic_level::error, d.location, "cannot open #include: " + header);
+      return;
+    }
+
+    if (std::ranges::contains(pragma_once_paths_, resolved_path)) {
+      return;
+    }
+
+    if (include_stack_.size() >= max_include_depth) {
+      report(diagnostic_level::error, d.location, "#include depth exceeded");
+      return;
+    }
+
+    include_stack_.push_back(std::make_unique<include_frame>(
+        std::move(resolved_path), std::move(resolved_content),
+        cond_stack_.size(), sink_));
+    at_line_start_ = true;
+  }
+
+  constexpr void handle_pragma(parsed_directive const& d)
+  {
+    auto const& toks = d.tokens;
+    std::size_t i = 0;
+    while (i < toks.size() && toks[i].kind == pp_token_kind::whitespace) ++i;
+    if (i < toks.size() && toks[i].kind == pp_token_kind::identifier && toks[i].spelling == "once") {
+      std::string path{current_file_path()};
+      if (!std::ranges::contains(pragma_once_paths_, path)) {
+        pragma_once_paths_.push_back(std::move(path));
+      }
+    }
+    (void)d;
+  }
+
+  // Parse a header name from `toks[i..]` — either a literal header_name token,
+  // a "..." string literal, a <...> sequence, or a macro-expanded form.
+  constexpr std::string extract_header_name(
+      std::vector<pp_token> const& toks, std::size_t i, source_location loc)
+  {
+    if (toks[i].kind == pp_token_kind::header_name) {
+      return std::string{toks[i].spelling};
+    }
+
+    std::vector<pp_token> rest;
+    rest.reserve(toks.size() - i);
+    for (std::size_t k = i; k < toks.size(); ++k) rest.push_back(toks[k]);
+    auto expanded = expand_tokens(std::move(rest));
+    return reconstruct_header_from_tokens(expanded, loc);
+  }
+
+  constexpr std::string reconstruct_header_from_tokens(
+      std::vector<pp_token> const& v, source_location loc)
+  {
+    std::size_t j = 0;
+    while (j < v.size() && (v[j].kind == pp_token_kind::whitespace || v[j].kind == pp_token_kind::newline)) ++j;
+    if (j >= v.size()) {
+      report(diagnostic_level::error, loc, "#include expects a header name");
+      return {};
+    }
+    if (v[j].kind == pp_token_kind::string_literal) {
+      return std::string{v[j].spelling};
+    }
+    if (v[j].kind == pp_token_kind::header_name) {
+      return std::string{v[j].spelling};
+    }
+    if (v[j].kind == pp_token_kind::punctuator && v[j].spelling == "<") {
+      std::string out;
+      out.push_back('<');
+      ++j;
+      while (j < v.size()) {
+        auto const& tk = v[j];
+        if (tk.kind == pp_token_kind::punctuator && tk.spelling == ">") {
+          out.push_back('>');
+          return out;
+        }
+        if (tk.kind == pp_token_kind::newline) break;
+        if (tk.kind != pp_token_kind::whitespace) out.append(tk.spelling);
+        ++j;
+      }
+      report(diagnostic_level::error, loc, "unterminated '<...>' header name in #include");
+      return {};
+    }
+    report(diagnostic_level::error, loc, "#include expects a header name");
+    return {};
+  }
+
   constexpr bool try_expand_into(pending_token const& pt, expansion_queue& queue, bool lexer_refill)
   {
     if (pt.tok.kind != pp_token_kind::identifier) return false;
@@ -457,7 +649,7 @@ private:
     auto ensure = [&](std::size_t idx) -> bool {
       while (queue.size() <= idx) {
         if (!lexer_refill) return false;
-        auto t = lexer_->next();
+        auto t = active_lexer().next();
         if (t.kind == pp_token_kind::end_of_file) return false;
         queue.push_back(pending_token{std::move(t), {}});
       }
