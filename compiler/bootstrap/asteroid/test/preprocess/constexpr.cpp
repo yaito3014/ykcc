@@ -91,6 +91,18 @@ static_assert(check("#define H(X, ...) __VA_OPT__(a X ## b) ## c\nH(1, 2)\n", {"
 static_assert(check("#define H(X, ...) a ## __VA_OPT__(b) c\nH(1)\n", {"a", "c"}));
 static_assert(check("#define H(X, ...) a ## __VA_OPT__(b) c\nH(1, 2)\n", {"ab", "c"}));
 
+// `#` stringify: uses raw argument, collapses internal whitespace, trims ends.
+static_assert(check("#define S(x) # x\nS(foo)\n", {"\"foo\""}));
+static_assert(check("#define S(x) # x\nS(  a   b  )\n", {"\"a b\""}));
+// Stringify uses the RAW argument (no macro expansion).
+static_assert(check("#define X 42\n#define S(x) # x\nS(X)\n", {"\"X\""}));
+// Stringify with variadic.
+static_assert(check("#define S(...) # __VA_ARGS__\nS(1, 2, 3)\n", {"\"1, 2, 3\""}));
+// Stringify escapes " and \ inside string literals in the argument.
+static_assert(check("#define S(x) # x\nS(\"a\\n\")\n", {"\"\\\"a\\\\n\\\"\""}));
+// Stringify followed by paste.
+static_assert(check("#define SC(a,b) # a ## b\nSC(foo, bar)\n", {"\"foo\"bar"}));
+
 }  // namespace
 
 TEST_CASE("constexpr: compile-time tests compiled and linked")

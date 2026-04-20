@@ -460,7 +460,9 @@ private:
     return out;
   }
 
-  // Parameter substitution with ## (paste) and __VA_OPT__ resolution. `#` (stringify) is not yet implemented.
+  // Two-pass substitution. Pass 1 resolves `#` (stringify) and parameter substitution
+  // (raw tokens if adjacent to `##`, otherwise fully expanded tokens), leaving `##`
+  // tokens in place. Pass 2 processes `##` left to right with placemarker collapsing.
   constexpr std::vector<pp_token> substitute_body(
       macro_definition const& m,
       std::vector<std::vector<pp_token>> const& raw_args,
@@ -473,6 +475,9 @@ private:
     auto is_paste = [&](std::size_t idx) -> bool {
       return idx < n && repl[idx].kind == pp_token_kind::punctuator && repl[idx].spelling == "##";
     };
+    auto is_stringify = [&](std::size_t idx) -> bool {
+      return idx < n && repl[idx].kind == pp_token_kind::punctuator && repl[idx].spelling == "#";
+    };
     auto skip_ws_fwd = [&](std::size_t idx) -> std::size_t {
       while (idx < n && repl[idx].kind == pp_token_kind::whitespace) ++idx;
       return idx;
@@ -484,67 +489,137 @@ private:
       if (it == m.parameters.end()) return static_cast<std::size_t>(-1);
       return static_cast<std::size_t>(it - m.parameters.begin());
     };
-    auto trimmed_raw = [&](std::size_t pi, source_location loc) -> std::vector<pp_token> {
-      auto const& r = raw_args[pi];
-      std::size_t lo = 0, hi = r.size();
-      while (lo < hi && r[lo].kind == pp_token_kind::whitespace) ++lo;
-      while (hi > lo && r[hi - 1].kind == pp_token_kind::whitespace) --hi;
-      if (lo == hi) return {make_placemarker(loc)};
-      return std::vector<pp_token>(r.begin() + lo, r.begin() + hi);
+    auto paste_adjacent = [&](std::size_t idx) -> bool {
+      if (is_paste(skip_ws_fwd(idx + 1))) return true;
+      std::size_t k = idx;
+      while (k > 0 && repl[k - 1].kind == pp_token_kind::whitespace) --k;
+      return k > 0 && is_paste(k - 1);
     };
 
-    std::vector<pp_token> out;
-    out.reserve(n);
+    std::vector<pp_token> stage1;
+    stage1.reserve(n);
 
     std::size_t i = 0;
     while (i < n) {
       auto const& t = repl[i];
 
-      if (is_paste(i)) {
+      if (is_stringify(i)) {
         std::size_t const j = skip_ws_fwd(i + 1);
         if (j >= n) {
-          report(diagnostic_level::error, t.location, "'##' at end of macro replacement list");
+          report(diagnostic_level::error, t.location, "'#' at end of macro replacement list");
           break;
         }
-        while (!out.empty() && out.back().kind == pp_token_kind::whitespace) out.pop_back();
-
-        std::vector<pp_token> right;
-        auto const& rt = repl[j];
-        if (auto pi = param_idx(rt); pi != static_cast<std::size_t>(-1)) {
-          right = trimmed_raw(pi, rt.location);
-        } else {
-          right.push_back(rt);
+        auto const pi = param_idx(repl[j]);
+        if (pi == static_cast<std::size_t>(-1)) {
+          report(diagnostic_level::error, t.location, "'#' is not followed by a macro parameter");
+          stage1.push_back(t);
+          ++i;
+          continue;
         }
-
-        if (out.empty()) {
-          report(diagnostic_level::error, t.location, "'##' at start of macro replacement list");
-          out.append_range(right);
-        } else {
-          pp_token left = std::move(out.back());
-          out.pop_back();
-          out.push_back(paste_tokens(left, right.front()));
-          for (std::size_t k = 1; k < right.size(); ++k) out.push_back(std::move(right[k]));
-        }
+        stage1.push_back(stringify(raw_args[pi], t.location));
         i = j + 1;
         continue;
       }
 
-      if (auto pi = param_idx(t); pi != static_cast<std::size_t>(-1)) {
-        if (is_paste(skip_ws_fwd(i + 1))) {
-          auto raw = trimmed_raw(pi, t.location);
-          for (auto& tok : raw) out.push_back(std::move(tok));
+      if (auto const pi = param_idx(t); pi != static_cast<std::size_t>(-1)) {
+        if (paste_adjacent(i)) {
+          auto const& r = raw_args[pi];
+          std::size_t lo = 0, hi = r.size();
+          while (lo < hi && r[lo].kind == pp_token_kind::whitespace) ++lo;
+          while (hi > lo && r[hi - 1].kind == pp_token_kind::whitespace) --hi;
+          if (lo == hi) {
+            stage1.push_back(make_placemarker(t.location));
+          } else {
+            for (std::size_t k = lo; k < hi; ++k) stage1.push_back(r[k]);
+          }
         } else {
-          out.append_range(expanded_args[pi]);
+          stage1.append_range(expanded_args[pi]);
         }
         ++i;
         continue;
       }
 
-      out.push_back(t);
+      stage1.push_back(t);
       ++i;
     }
 
+    std::size_t const sn = stage1.size();
+    auto s_is_paste = [&](std::size_t idx) -> bool {
+      return idx < sn && stage1[idx].kind == pp_token_kind::punctuator && stage1[idx].spelling == "##";
+    };
+    auto s_skip_ws_fwd = [&](std::size_t idx) -> std::size_t {
+      while (idx < sn && stage1[idx].kind == pp_token_kind::whitespace) ++idx;
+      return idx;
+    };
+
+    std::vector<pp_token> out;
+    out.reserve(sn);
+
+    std::size_t i2 = 0;
+    while (i2 < sn) {
+      if (s_is_paste(i2)) {
+        std::size_t const j = s_skip_ws_fwd(i2 + 1);
+        if (j >= sn) {
+          report(diagnostic_level::error, stage1[i2].location, "'##' at end of macro replacement list");
+          break;
+        }
+        while (!out.empty() && out.back().kind == pp_token_kind::whitespace) out.pop_back();
+        if (out.empty()) {
+          report(diagnostic_level::error, stage1[i2].location, "'##' at start of macro replacement list");
+          out.push_back(stage1[j]);
+        } else {
+          pp_token left = std::move(out.back());
+          out.pop_back();
+          out.push_back(paste_tokens(left, stage1[j]));
+        }
+        i2 = j + 1;
+        continue;
+      }
+      out.push_back(stage1[i2]);
+      ++i2;
+    }
+
     std::erase_if(out, [](pp_token const& tok) { return tok.kind == pp_token_kind::placemarker; });
+    return out;
+  }
+
+  constexpr pp_token stringify(std::vector<pp_token> const& raw, source_location loc)
+  {
+    std::size_t lo = 0, hi = raw.size();
+    while (lo < hi && raw[lo].kind == pp_token_kind::whitespace) ++lo;
+    while (hi > lo && raw[hi - 1].kind == pp_token_kind::whitespace) --hi;
+
+    std::string body;
+    bool prev_ws = false;
+    bool started = false;
+    for (std::size_t i = lo; i < hi; ++i) {
+      auto const& t = raw[i];
+      if (t.kind == pp_token_kind::whitespace || t.kind == pp_token_kind::newline) {
+        if (started) prev_ws = true;
+        continue;
+      }
+      if (prev_ws) body.push_back(' ');
+      prev_ws = false;
+      started = true;
+
+      bool const lit = (t.kind == pp_token_kind::string_literal || t.kind == pp_token_kind::character_literal);
+      for (char c : t.spelling) {
+        if (lit && (c == '\\' || c == '"')) body.push_back('\\');
+        body.push_back(c);
+      }
+    }
+
+    std::string literal;
+    literal.reserve(body.size() + 2);
+    literal.push_back('"');
+    literal.append(body);
+    literal.push_back('"');
+
+    synth_strings_.emplace_back(std::move(literal));
+    pp_token out;
+    out.kind = pp_token_kind::string_literal;
+    out.spelling = std::string_view{*synth_strings_.back()};
+    out.location = loc;
     return out;
   }
 
