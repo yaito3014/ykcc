@@ -3,7 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <yk/asteroid/core/parser/common.hpp>
+#include <yk/asteroid/parser/common.hpp>
 
 #include <charconv>
 

@@ -1,0 +1,5 @@
+yk_asteroid_add_test(line_splicer)
+yk_asteroid_add_test(lexer)
+yk_asteroid_add_test(preprocessor)
+yk_asteroid_add_test(macro)
+yk_asteroid_add_test(constexpr)

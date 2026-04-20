@@ -7,36 +7,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
+set(CURRENT_DIR ${CMAKE_CURRENT_LIST_DIR})
+
 function(yk_asteroid_add_test test_name)
     set(target yk_asteroid_${test_name}_test)
 
     add_executable(${target} ${test_name}.cpp)
+
+    target_sources(
+        ${target}
+        PRIVATE
+            FILE_SET ${target}_headers
+                TYPE HEADERS
+                BASE_DIRS ${CURRENT_DIR}
+                FILES ${CURRENT_DIR}/test.hpp
+    )
 
     target_link_libraries(${target} PRIVATE yk::asteroid Catch2::Catch2WithMain)
 
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
-yk_asteroid_add_test(sequence)
-yk_asteroid_add_test(separated_by)
-yk_asteroid_add_test(alternative)
-yk_asteroid_add_test(negation)
-yk_asteroid_add_test(literal_parser)
-yk_asteroid_add_test(satisfy)
-yk_asteroid_add_test(one_of)
-yk_asteroid_add_test(optional_parser)
-yk_asteroid_add_test(plus)
-yk_asteroid_add_test(kleene)
-yk_asteroid_add_test(as_span)
-yk_asteroid_add_test(surrounded_by)
-
-yk_asteroid_add_test(identifier)
-yk_asteroid_add_test(pp_number)
-yk_asteroid_add_test(op_or_punc)
-yk_asteroid_add_test(header_name)
-yk_asteroid_add_test(char_literal)
-yk_asteroid_add_test(string_literal)
-yk_asteroid_add_test(line_splice)
-yk_asteroid_add_test(lexer)
-yk_asteroid_add_test(preprocessor)
-yk_asteroid_add_test(const_expr)
+add_subdirectory(parser)
+add_subdirectory(preprocess)
