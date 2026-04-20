@@ -103,6 +103,66 @@ static_assert(check("#define S(x) # x\nS(\"a\\n\")\n", {"\"\\\"a\\\\n\\\"\""}));
 // Stringify followed by paste.
 static_assert(check("#define SC(a,b) # a ## b\nSC(foo, bar)\n", {"\"foo\"bar"}));
 
+// -------------------------------------------------------------------------
+// Conditional directives: #ifdef / #ifndef / #if / #elif / #else / #endif.
+// -------------------------------------------------------------------------
+
+// Basic #ifdef / #ifndef.
+static_assert(check("#define X\n#ifdef X\nyes\n#endif\n", {"yes"}));
+static_assert(check("#ifdef X\nyes\n#endif\n", {}));
+static_assert(check("#ifndef X\nyes\n#endif\n", {"yes"}));
+static_assert(check("#define X\n#ifndef X\nyes\n#endif\n", {}));
+
+// #else.
+static_assert(check("#ifdef X\na\n#else\nb\n#endif\n", {"b"}));
+static_assert(check("#define X\n#ifdef X\na\n#else\nb\n#endif\n", {"a"}));
+
+// #elif chain.
+static_assert(check("#if 0\na\n#elif 1\nb\n#else\nc\n#endif\n", {"b"}));
+static_assert(check("#if 0\na\n#elif 0\nb\n#else\nc\n#endif\n", {"c"}));
+static_assert(check("#if 1\na\n#elif 1\nb\n#else\nc\n#endif\n", {"a"}));
+
+// defined() in #if.
+static_assert(check("#define X\n#if defined(X)\nyes\n#endif\n", {"yes"}));
+static_assert(check("#define X\n#if defined X\nyes\n#endif\n", {"yes"}));
+static_assert(check("#if defined(X)\nyes\n#else\nno\n#endif\n", {"no"}));
+static_assert(check("#define X\n#if !defined(Y) && defined(X)\nyes\n#endif\n", {"yes"}));
+
+// Arithmetic in #if.
+static_assert(check("#if 1 + 2 == 3\nyes\n#endif\n", {"yes"}));
+static_assert(check("#if (1 << 4) == 16\nyes\n#endif\n", {"yes"}));
+static_assert(check("#if 10 / 3\nyes\n#endif\n", {"yes"}));
+static_assert(check("#if 10 % 3 == 1\nyes\n#endif\n", {"yes"}));
+
+// Ternary.
+static_assert(check("#if 1 ? 2 : 3\na\n#endif\n", {"a"}));
+static_assert(check("#if 0 ? 2 : 0\na\n#else\nb\n#endif\n", {"b"}));
+
+// Macro expansion inside #if.
+static_assert(check("#define V 42\n#if V > 10\nyes\n#endif\n", {"yes"}));
+static_assert(check("#define V 0\n#if V\nyes\n#else\nno\n#endif\n", {"no"}));
+
+// Undefined identifier evaluates to 0.
+static_assert(check("#if UNDEF\na\n#else\nb\n#endif\n", {"b"}));
+static_assert(check("#if !UNDEF\na\n#endif\n", {"a"}));
+
+// Nested conditionals.
+static_assert(check("#define A\n#define B\n#ifdef A\n  #ifdef B\nboth\n  #else\nonlyA\n  #endif\n#endif\n", {"both"}));
+static_assert(check("#define A\n#ifdef A\n  #ifdef B\nBset\n  #else\nBunset\n  #endif\n#endif\n", {"Bunset"}));
+
+// Conditional disables directive inside skipped branch.
+static_assert(!defines("#if 0\n#define X 1\n#endif\n", "X"));
+static_assert(defines("#if 1\n#define X 1\n#endif\n", "X"));
+
+// #elifdef / #elifndef.
+static_assert(check("#ifdef A\na\n#elifdef B\nb\n#else\nc\n#endif\n", {"c"}));
+static_assert(check("#define B\n#ifdef A\na\n#elifdef B\nb\n#else\nc\n#endif\n", {"b"}));
+static_assert(check("#ifdef A\na\n#elifndef B\nb\n#else\nc\n#endif\n", {"b"}));
+
+// Character literals in #if.
+static_assert(check("#if 'a' == 97\nyes\n#endif\n", {"yes"}));
+static_assert(check("#if '\\n' == 10\nyes\n#endif\n", {"yes"}));
+
 }  // namespace
 
 TEST_CASE("constexpr: compile-time tests compiled and linked")

@@ -36,6 +36,9 @@ public:
       pending_token pt;
       if (!take_next(pt)) {
         eof_emitted_ = true;
+        if (!cond_stack_.empty()) {
+          report(diagnostic_level::error, cond_stack_.back().location, "unterminated conditional directive");
+        }
         pp_token eof;
         eof.kind = pp_token_kind::end_of_file;
         return eof;
@@ -44,6 +47,12 @@ public:
       if (at_line_start_ && pt.tok.kind == pp_token_kind::punctuator && pt.tok.spelling == "#") {
         process_directive(pt.tok);
         at_line_start_ = true;
+        continue;
+      }
+
+      if (skipping()) {
+        if (pt.tok.kind == pp_token_kind::newline) at_line_start_ = true;
+        else if (pt.tok.kind != pp_token_kind::whitespace) at_line_start_ = false;
         continue;
       }
 
@@ -68,12 +77,20 @@ private:
 
   using expansion_queue = std::vector<pending_token>;
 
+  struct cond_frame {
+    source_location location;  // of the #if/#ifdef/#ifndef that opened this frame
+    bool any_taken = false;    // has any branch at this level been the selected one?
+    bool currently_active = false;  // is the current branch the selected one?
+    bool saw_else = false;     // has #else been seen (forbids further #elif/#else)
+  };
+
   lexer<Sink>* lexer_;
   [[no_unique_address]] Sink sink_{};
   [[no_unique_address]] Handler handler_{};
   macro_table macros_;
   expansion_queue pending_;
   std::vector<std::indirect<std::string>> synth_strings_;
+  std::vector<cond_frame> cond_stack_;
   bool at_line_start_ = true;
   bool eof_emitted_ = false;
 
@@ -145,17 +162,33 @@ private:
     collect_until_newline(d.tokens);
 
     switch (d.kind) {
+      case directive_kind::if_:       handle_if(d); break;
+      case directive_kind::ifdef:     handle_ifdef(d); break;
+      case directive_kind::ifndef:    handle_ifndef(d); break;
+      case directive_kind::elif:      handle_elif(d); break;
+      case directive_kind::elifdef:   handle_elifdef(d); break;
+      case directive_kind::elifndef:  handle_elifndef(d); break;
+      case directive_kind::else_:     handle_else(d); break;
+      case directive_kind::endif:     handle_endif(d); break;
       case directive_kind::define:
-        handle_define(d);
+        if (!skipping()) handle_define(d);
         break;
       case directive_kind::undef:
-        handle_undef(d);
+        if (!skipping()) handle_undef(d);
         break;
       default:
         break;
     }
 
     handler_(d);
+  }
+
+  constexpr bool skipping() const noexcept
+  {
+    for (auto const& f : cond_stack_) {
+      if (!f.currently_active) return true;
+    }
+    return false;
   }
 
   constexpr void handle_define(parsed_directive const& d)
@@ -242,6 +275,141 @@ private:
       report(diagnostic_level::warning, name_tok.location, "macro '" + m.name + "' redefined with a different body");
     }
     macros_.define(std::move(m));
+  }
+
+  // ------------------------------------------------------------------------
+  // Conditional directive handlers.
+  // ------------------------------------------------------------------------
+
+  constexpr void handle_ifdef(parsed_directive const& d)
+  {
+    auto name = extract_single_identifier(d, "#ifdef");
+    bool const cond = !name.empty() && macros_.defined(name);
+    push_if(d.location, skipping() ? false : cond);
+  }
+
+  constexpr void handle_ifndef(parsed_directive const& d)
+  {
+    auto name = extract_single_identifier(d, "#ifndef");
+    bool const cond = !name.empty() && !macros_.defined(name);
+    push_if(d.location, skipping() ? false : cond);
+  }
+
+  constexpr void handle_if(parsed_directive const& d)
+  {
+    bool cond = false;
+    if (!skipping()) cond = evaluate_condition(d.tokens, d.location);
+    push_if(d.location, cond);
+  }
+
+  constexpr void handle_elif(parsed_directive const& d)
+  {
+    if (cond_stack_.empty()) {
+      report(diagnostic_level::error, d.location, "#elif without matching #if");
+      return;
+    }
+    auto& f = cond_stack_.back();
+    if (f.saw_else) {
+      report(diagnostic_level::error, d.location, "#elif after #else");
+      f.currently_active = false;
+      return;
+    }
+    if (f.any_taken || !parent_active()) {
+      f.currently_active = false;
+      return;
+    }
+    bool const cond = evaluate_condition(d.tokens, d.location);
+    f.currently_active = cond;
+    f.any_taken = cond;
+  }
+
+  constexpr void handle_elifdef(parsed_directive const& d)
+  {
+    handle_elif_defined_like(d, "#elifdef", /*negate=*/false);
+  }
+
+  constexpr void handle_elifndef(parsed_directive const& d)
+  {
+    handle_elif_defined_like(d, "#elifndef", /*negate=*/true);
+  }
+
+  constexpr void handle_elif_defined_like(parsed_directive const& d, std::string_view name, bool negate)
+  {
+    if (cond_stack_.empty()) {
+      report(diagnostic_level::error, d.location, std::string{name} + " without matching #if");
+      return;
+    }
+    auto& f = cond_stack_.back();
+    if (f.saw_else) {
+      report(diagnostic_level::error, d.location, std::string{name} + " after #else");
+      f.currently_active = false;
+      return;
+    }
+    if (f.any_taken || !parent_active()) {
+      f.currently_active = false;
+      return;
+    }
+    auto id = extract_single_identifier(d, name);
+    bool cond = !id.empty() && macros_.defined(id);
+    if (negate) cond = !cond;
+    f.currently_active = cond;
+    f.any_taken = cond;
+  }
+
+  constexpr void handle_else(parsed_directive const& d)
+  {
+    if (cond_stack_.empty()) {
+      report(diagnostic_level::error, d.location, "#else without matching #if");
+      return;
+    }
+    auto& f = cond_stack_.back();
+    if (f.saw_else) {
+      report(diagnostic_level::error, d.location, "#else after #else");
+      f.currently_active = false;
+      return;
+    }
+    f.saw_else = true;
+    f.currently_active = parent_active() && !f.any_taken;
+    if (f.currently_active) f.any_taken = true;
+  }
+
+  constexpr bool parent_active() const noexcept
+  {
+    if (cond_stack_.empty()) return true;
+    for (std::size_t i = 0; i + 1 < cond_stack_.size(); ++i) {
+      if (!cond_stack_[i].currently_active) return false;
+    }
+    return true;
+  }
+
+  constexpr void handle_endif(parsed_directive const& d)
+  {
+    if (cond_stack_.empty()) {
+      report(diagnostic_level::error, d.location, "#endif without matching #if");
+      return;
+    }
+    cond_stack_.pop_back();
+  }
+
+  constexpr void push_if(source_location loc, bool cond)
+  {
+    cond_frame f;
+    f.location = loc;
+    f.currently_active = cond;
+    f.any_taken = cond;
+    cond_stack_.push_back(f);
+  }
+
+  constexpr std::string_view extract_single_identifier(parsed_directive const& d, std::string_view directive_name)
+  {
+    auto const& toks = d.tokens;
+    std::size_t i = 0;
+    while (i < toks.size() && toks[i].kind == pp_token_kind::whitespace) ++i;
+    if (i >= toks.size() || toks[i].kind != pp_token_kind::identifier) {
+      report(diagnostic_level::error, d.location, std::string{directive_name} + " expects an identifier");
+      return {};
+    }
+    return toks[i].spelling;
   }
 
   constexpr void handle_undef(parsed_directive const& d)
@@ -688,6 +856,412 @@ private:
   {
     if (!in_hideset(hs, name)) hs.emplace_back(name);
     return hs;
+  }
+
+  // ------------------------------------------------------------------------
+  // #if constant-expression evaluator.
+  // ------------------------------------------------------------------------
+
+  struct ce_ctx {
+    std::vector<pp_token> const* toks;
+    std::size_t pos = 0;
+    bool had_error = false;
+    source_location err_loc;
+    std::string err_msg;
+  };
+
+  constexpr bool evaluate_condition(std::vector<pp_token> const& raw, source_location loc)
+  {
+    auto after_defined = apply_defined(raw, loc);
+    auto expanded = expand_tokens(std::move(after_defined));
+    ce_ctx c{&expanded};
+    long long v = ce_parse_ternary(c);
+    ce_skip_ws(c);
+    if (!c.had_error && c.pos < expanded.size()) {
+      c.had_error = true;
+      c.err_loc = expanded[c.pos].location;
+      c.err_msg = "unexpected token in #if expression";
+    }
+    if (c.had_error) {
+      report(diagnostic_level::error, c.err_msg.empty() ? loc : c.err_loc, c.err_msg.empty() ? "invalid #if expression" : c.err_msg);
+      return false;
+    }
+    return v != 0;
+  }
+
+  constexpr std::vector<pp_token> apply_defined(std::vector<pp_token> const& in, source_location loc)
+  {
+    std::vector<pp_token> out;
+    out.reserve(in.size());
+    std::size_t i = 0;
+    auto skip_ws = [&](std::size_t j) {
+      while (j < in.size() && in[j].kind == pp_token_kind::whitespace) ++j;
+      return j;
+    };
+    while (i < in.size()) {
+      auto const& t = in[i];
+      if (t.kind == pp_token_kind::identifier && t.spelling == "defined") {
+        std::size_t j = skip_ws(i + 1);
+        bool paren = false;
+        if (j < in.size() && in[j].kind == pp_token_kind::punctuator && in[j].spelling == "(") {
+          paren = true;
+          j = skip_ws(j + 1);
+        }
+        if (j >= in.size() || in[j].kind != pp_token_kind::identifier) {
+          report(diagnostic_level::error, t.location, "'defined' must be followed by an identifier");
+          out.push_back(t);
+          ++i;
+          continue;
+        }
+        bool is_def = macros_.defined(in[j].spelling);
+        std::size_t next = j + 1;
+        if (paren) {
+          next = skip_ws(next);
+          if (next >= in.size() || in[next].kind != pp_token_kind::punctuator || in[next].spelling != ")") {
+            report(diagnostic_level::error, t.location, "expected ')' after argument to 'defined'");
+            out.push_back(t);
+            ++i;
+            continue;
+          }
+          ++next;
+        }
+        pp_token n;
+        n.kind = pp_token_kind::pp_number;
+        n.spelling = is_def ? std::string_view{"1"} : std::string_view{"0"};
+        n.location = t.location;
+        out.push_back(n);
+        i = next;
+        continue;
+      }
+      out.push_back(t);
+      ++i;
+    }
+    (void)loc;
+    return out;
+  }
+
+  static constexpr void ce_skip_ws(ce_ctx& c) noexcept
+  {
+    while (c.pos < c.toks->size()) {
+      auto k = (*c.toks)[c.pos].kind;
+      if (k == pp_token_kind::whitespace || k == pp_token_kind::newline) ++c.pos;
+      else break;
+    }
+  }
+
+  static constexpr bool ce_peek_punct(ce_ctx& c, std::string_view sp) noexcept
+  {
+    ce_skip_ws(c);
+    if (c.pos >= c.toks->size()) return false;
+    auto const& t = (*c.toks)[c.pos];
+    return t.kind == pp_token_kind::punctuator && t.spelling == sp;
+  }
+
+  static constexpr bool ce_match_punct(ce_ctx& c, std::string_view sp) noexcept
+  {
+    if (!ce_peek_punct(c, sp)) return false;
+    ++c.pos;
+    return true;
+  }
+
+  static constexpr void ce_error(ce_ctx& c, std::string msg) noexcept
+  {
+    if (c.had_error) return;
+    c.had_error = true;
+    if (c.pos < c.toks->size()) c.err_loc = (*c.toks)[c.pos].location;
+    c.err_msg = std::move(msg);
+  }
+
+  static constexpr long long ce_parse_ternary(ce_ctx& c)
+  {
+    long long cond = ce_parse_logor(c);
+    if (ce_match_punct(c, "?")) {
+      long long lhs = ce_parse_ternary(c);
+      if (!ce_match_punct(c, ":")) {
+        ce_error(c, "expected ':' in ternary");
+        return 0;
+      }
+      long long rhs = ce_parse_ternary(c);
+      return cond ? lhs : rhs;
+    }
+    return cond;
+  }
+
+  static constexpr long long ce_parse_logor(ce_ctx& c)
+  {
+    long long lhs = ce_parse_logand(c);
+    while (ce_match_punct(c, "||")) {
+      long long rhs = ce_parse_logand(c);
+      lhs = (lhs || rhs) ? 1 : 0;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_logand(ce_ctx& c)
+  {
+    long long lhs = ce_parse_bitor(c);
+    while (ce_match_punct(c, "&&")) {
+      long long rhs = ce_parse_bitor(c);
+      lhs = (lhs && rhs) ? 1 : 0;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_bitor(ce_ctx& c)
+  {
+    long long lhs = ce_parse_bitxor(c);
+    while (true) {
+      ce_skip_ws(c);
+      if (ce_peek_punct(c, "||")) break;  // don't mis-split ||
+      if (!ce_match_punct(c, "|")) break;
+      long long rhs = ce_parse_bitxor(c);
+      lhs = static_cast<long long>(static_cast<unsigned long long>(lhs) | static_cast<unsigned long long>(rhs));
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_bitxor(ce_ctx& c)
+  {
+    long long lhs = ce_parse_bitand(c);
+    while (ce_match_punct(c, "^")) {
+      long long rhs = ce_parse_bitand(c);
+      lhs = static_cast<long long>(static_cast<unsigned long long>(lhs) ^ static_cast<unsigned long long>(rhs));
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_bitand(ce_ctx& c)
+  {
+    long long lhs = ce_parse_eq(c);
+    while (true) {
+      if (ce_peek_punct(c, "&&")) break;
+      if (!ce_match_punct(c, "&")) break;
+      long long rhs = ce_parse_eq(c);
+      lhs = static_cast<long long>(static_cast<unsigned long long>(lhs) & static_cast<unsigned long long>(rhs));
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_eq(ce_ctx& c)
+  {
+    long long lhs = ce_parse_rel(c);
+    while (true) {
+      if (ce_match_punct(c, "==")) {
+        long long rhs = ce_parse_rel(c);
+        lhs = (lhs == rhs) ? 1 : 0;
+      } else if (ce_match_punct(c, "!=")) {
+        long long rhs = ce_parse_rel(c);
+        lhs = (lhs != rhs) ? 1 : 0;
+      } else break;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_rel(ce_ctx& c)
+  {
+    long long lhs = ce_parse_shift(c);
+    while (true) {
+      if (ce_match_punct(c, "<=")) {
+        long long rhs = ce_parse_shift(c);
+        lhs = (lhs <= rhs) ? 1 : 0;
+      } else if (ce_match_punct(c, ">=")) {
+        long long rhs = ce_parse_shift(c);
+        lhs = (lhs >= rhs) ? 1 : 0;
+      } else if (ce_match_punct(c, "<")) {
+        long long rhs = ce_parse_shift(c);
+        lhs = (lhs < rhs) ? 1 : 0;
+      } else if (ce_match_punct(c, ">")) {
+        long long rhs = ce_parse_shift(c);
+        lhs = (lhs > rhs) ? 1 : 0;
+      } else break;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_shift(ce_ctx& c)
+  {
+    long long lhs = ce_parse_add(c);
+    while (true) {
+      if (ce_match_punct(c, "<<")) {
+        long long rhs = ce_parse_add(c);
+        unsigned long long u = static_cast<unsigned long long>(lhs);
+        lhs = static_cast<long long>(u << (rhs & 63));
+      } else if (ce_match_punct(c, ">>")) {
+        long long rhs = ce_parse_add(c);
+        lhs = lhs >> (rhs & 63);
+      } else break;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_add(ce_ctx& c)
+  {
+    long long lhs = ce_parse_mul(c);
+    while (true) {
+      if (ce_match_punct(c, "+")) {
+        long long rhs = ce_parse_mul(c);
+        lhs = static_cast<long long>(static_cast<unsigned long long>(lhs) + static_cast<unsigned long long>(rhs));
+      } else if (ce_match_punct(c, "-")) {
+        long long rhs = ce_parse_mul(c);
+        lhs = static_cast<long long>(static_cast<unsigned long long>(lhs) - static_cast<unsigned long long>(rhs));
+      } else break;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_mul(ce_ctx& c)
+  {
+    long long lhs = ce_parse_unary(c);
+    while (true) {
+      if (ce_match_punct(c, "*")) {
+        long long rhs = ce_parse_unary(c);
+        lhs = static_cast<long long>(static_cast<unsigned long long>(lhs) * static_cast<unsigned long long>(rhs));
+      } else if (ce_match_punct(c, "/")) {
+        long long rhs = ce_parse_unary(c);
+        if (rhs == 0) { ce_error(c, "division by zero in #if"); return 0; }
+        lhs = lhs / rhs;
+      } else if (ce_match_punct(c, "%")) {
+        long long rhs = ce_parse_unary(c);
+        if (rhs == 0) { ce_error(c, "modulo by zero in #if"); return 0; }
+        lhs = lhs % rhs;
+      } else break;
+    }
+    return lhs;
+  }
+
+  static constexpr long long ce_parse_unary(ce_ctx& c)
+  {
+    if (ce_match_punct(c, "+")) return ce_parse_unary(c);
+    if (ce_match_punct(c, "-")) return -ce_parse_unary(c);
+    if (ce_match_punct(c, "!")) return ce_parse_unary(c) == 0 ? 1 : 0;
+    if (ce_match_punct(c, "~")) return static_cast<long long>(~static_cast<unsigned long long>(ce_parse_unary(c)));
+    return ce_parse_primary(c);
+  }
+
+  static constexpr long long ce_parse_primary(ce_ctx& c)
+  {
+    ce_skip_ws(c);
+    if (c.pos >= c.toks->size()) {
+      ce_error(c, "unexpected end of #if expression");
+      return 0;
+    }
+    auto const& t = (*c.toks)[c.pos];
+    if (t.kind == pp_token_kind::punctuator && t.spelling == "(") {
+      ++c.pos;
+      long long v = ce_parse_ternary(c);
+      if (!ce_match_punct(c, ")")) ce_error(c, "expected ')'");
+      return v;
+    }
+    if (t.kind == pp_token_kind::pp_number) {
+      ++c.pos;
+      return parse_integer_literal(t.spelling);
+    }
+    if (t.kind == pp_token_kind::character_literal) {
+      ++c.pos;
+      return parse_character_literal(t.spelling);
+    }
+    if (t.kind == pp_token_kind::identifier) {
+      auto sp = t.spelling;
+      ++c.pos;
+      if (sp == "true") return 1;
+      if (sp == "false") return 0;
+      return 0;  // undefined identifiers evaluate to 0
+    }
+    ce_error(c, "expected integer constant in #if expression");
+    ++c.pos;
+    return 0;
+  }
+
+  static constexpr long long parse_integer_literal(std::string_view s) noexcept
+  {
+    std::string norm;
+    norm.reserve(s.size());
+    for (char ch : s) {
+      if (ch == '\'') continue;  // digit separator
+      norm.push_back(ch);
+    }
+    std::size_t i = 0;
+    int base = 10;
+    if (norm.size() >= 2 && norm[0] == '0' && (norm[1] == 'x' || norm[1] == 'X')) {
+      base = 16;
+      i = 2;
+    } else if (norm.size() >= 2 && norm[0] == '0' && (norm[1] == 'b' || norm[1] == 'B')) {
+      base = 2;
+      i = 2;
+    } else if (!norm.empty() && norm[0] == '0') {
+      base = 8;
+    }
+    unsigned long long val = 0;
+    while (i < norm.size()) {
+      char ch = norm[i];
+      int d = -1;
+      if (ch >= '0' && ch <= '9') d = ch - '0';
+      else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
+      else if (ch >= 'A' && ch <= 'F') d = 10 + (ch - 'A');
+      else break;
+      if (d >= base) break;
+      val = val * static_cast<unsigned long long>(base) + static_cast<unsigned long long>(d);
+      ++i;
+    }
+    return static_cast<long long>(val);
+  }
+
+  static constexpr long long parse_character_literal(std::string_view s) noexcept
+  {
+    std::size_t i = 0;
+    if (i < s.size() && (s[i] == 'L' || s[i] == 'u' || s[i] == 'U')) {
+      ++i;
+      if (i < s.size() && s[i] == '8') ++i;
+    }
+    if (i >= s.size() || s[i] != '\'') return 0;
+    ++i;
+    if (i >= s.size()) return 0;
+    if (s[i] == '\\') {
+      ++i;
+      if (i >= s.size()) return 0;
+      char e = s[i];
+      ++i;
+      switch (e) {
+        case 'n': return '\n';
+        case 't': return '\t';
+        case 'r': return '\r';
+        case '\\': return '\\';
+        case '\'': return '\'';
+        case '"': return '"';
+        case 'a': return '\a';
+        case 'b': return '\b';
+        case 'f': return '\f';
+        case 'v': return '\v';
+        case '?': return '?';
+        case 'x': {
+          unsigned long long v = 0;
+          while (i < s.size() && s[i] != '\'') {
+            char ch = s[i];
+            int d = -1;
+            if (ch >= '0' && ch <= '9') d = ch - '0';
+            else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
+            else if (ch >= 'A' && ch <= 'F') d = 10 + (ch - 'A');
+            else break;
+            v = v * 16 + static_cast<unsigned long long>(d);
+            ++i;
+          }
+          return static_cast<long long>(v);
+        }
+        default:
+          if (e >= '0' && e <= '7') {
+            unsigned long long v = static_cast<unsigned long long>(e - '0');
+            int count = 1;
+            while (i < s.size() && count < 3 && s[i] >= '0' && s[i] <= '7') {
+              v = v * 8 + static_cast<unsigned long long>(s[i] - '0');
+              ++i;
+              ++count;
+            }
+            return static_cast<long long>(v);
+          }
+          return static_cast<unsigned char>(e);
+      }
+    }
+    return static_cast<unsigned char>(s[i]);
   }
 };
 
