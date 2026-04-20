@@ -57,6 +57,40 @@ static_assert(defines("#define A 1\n#define B 2\n", "A"));
 static_assert(defines("#define A 1\n#define B 2\n", "B"));
 static_assert(!defines("#define A 1\n#undef A\n", "A"));
 
+// `##` paste: parameters use raw (unexpanded) argument tokens.
+static_assert(check("#define CAT(a,b) a ## b\nCAT(foo, bar)\n", {"foobar"}));
+static_assert(check("#define CAT(a,b) a ## b\nCAT(x_, 3)\n", {"x_3"}));
+static_assert(check("#define P(x) x ## _suffix\nP(hello)\n", {"hello_suffix"}));
+// Non-paste parameters still use expanded args.
+static_assert(check("#define ID 42\n#define CAT(a,b) a ## b\nCAT(ID, X)\n", {"IDX"}));
+static_assert(check("#define ID 42\n#define USE(x) x\nUSE(ID)\n", {"42"}));
+// Empty argument adjacent to ## becomes a placemarker that collapses.
+static_assert(check("#define CAT(a,b) a ## b\nCAT(foo,)\n", {"foo"}));
+static_assert(check("#define CAT(a,b) a ## b\nCAT(,bar)\n", {"bar"}));
+static_assert(check("#define CAT(a,b) a ## b\nCAT(,)\n", {}));
+// Rescan after paste: if the pasted token names a macro, it expands.
+static_assert(check("#define FOO 99\n#define CAT(a,b) a ## b\nCAT(FO, O)\n", {"99"}));
+
+// Variadic macros and __VA_ARGS__.
+static_assert(check("#define F(...) __VA_ARGS__\nF(1, 2, 3)\n", {"1", ",", "2", ",", "3"}));
+static_assert(check("#define F(x, ...) x , __VA_ARGS__\nF(a, 1, 2)\n", {"a", ",", "1", ",", "2"}));
+static_assert(check("#define F(x, ...) x\nF(a, 1, 2)\n", {"a"}));
+static_assert(check("#define F(...) __VA_ARGS__\nF()\n", {}));
+
+// __VA_OPT__ basic: non-empty variadic inlines content.
+static_assert(check("#define F(...) f(0 __VA_OPT__(,) __VA_ARGS__)\nF(1)\n",
+                    {"f", "(", "0", ",", "1", ")"}));
+static_assert(check("#define F(...) f(0 __VA_OPT__(,) __VA_ARGS__)\nF()\n",
+                    {"f", "(", "0", ")"}));
+
+// __VA_OPT__ with ## adjacency (matches GCC on `H4(X,...) __VA_OPT__(a X ## b) ## c`).
+static_assert(check("#define H(X, ...) __VA_OPT__(a X ## b) ## c\nH(1)\n", {"c"}));
+static_assert(check("#define H(X, ...) __VA_OPT__(a X ## b) ## c\nH(1, 2)\n", {"a", "1bc"}));
+
+// __VA_OPT__ external to ## on the right side.
+static_assert(check("#define H(X, ...) a ## __VA_OPT__(b) c\nH(1)\n", {"a", "c"}));
+static_assert(check("#define H(X, ...) a ## __VA_OPT__(b) c\nH(1, 2)\n", {"ab", "c"}));
+
 }  // namespace
 
 TEST_CASE("constexpr: compile-time tests compiled and linked")

@@ -16,6 +16,7 @@ enum class pp_token_kind {
   string_literal,
   header_name,
   punctuator,
+  placemarker,
   other,
   end_of_file,
 };

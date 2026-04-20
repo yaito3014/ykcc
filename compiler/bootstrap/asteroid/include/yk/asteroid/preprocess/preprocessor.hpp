@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -72,6 +73,7 @@ private:
   [[no_unique_address]] Handler handler_{};
   macro_table macros_;
   expansion_queue pending_;
+  std::vector<std::indirect<std::string>> synth_strings_;
   bool at_line_start_ = true;
   bool eof_emitted_ = false;
 
@@ -186,6 +188,21 @@ private:
         if (t.kind == pp_token_kind::punctuator && t.spelling == ")") {
           if (expecting_param && !m.parameters.empty()) {
             report(diagnostic_level::error, t.location, "expected parameter before ')'");
+            return;
+          }
+          ++i;
+          break;
+        }
+        if (t.kind == pp_token_kind::punctuator && t.spelling == "...") {
+          if (!expecting_param) {
+            report(diagnostic_level::error, t.location, "'...' must follow '(' or ','");
+            return;
+          }
+          m.is_variadic = true;
+          ++i;
+          while (i < toks.size() && toks[i].kind == pp_token_kind::whitespace) ++i;
+          if (i >= toks.size() || toks[i].kind != pp_token_kind::punctuator || toks[i].spelling != ")") {
+            report(diagnostic_level::error, t.location, "expected ')' after '...'");
             return;
           }
           ++i;
@@ -309,14 +326,34 @@ private:
     std::size_t const rparen_idx = i;
     auto const rparen_hideset = queue[rparen_idx].hideset;
 
-    if (raw_args.size() == 1 && raw_args[0].empty() && m.parameters.empty()) {
+    if (raw_args.size() == 1 && raw_args[0].empty() && m.parameters.empty() && !m.is_variadic) {
       raw_args.clear();
     }
 
-    if (raw_args.size() != m.parameters.size()) {
-      report(diagnostic_level::error, name_tok.location, "wrong number of arguments to function-like macro '" + m.name + "'");
-      queue.erase(queue.begin(), queue.begin() + rparen_idx + 1);
-      return true;
+    if (m.is_variadic) {
+      if (raw_args.size() < m.parameters.size()) {
+        report(diagnostic_level::error, name_tok.location, "too few arguments to variadic macro '" + m.name + "'");
+        queue.erase(queue.begin(), queue.begin() + rparen_idx + 1);
+        return true;
+      }
+      std::vector<pp_token> merged;
+      for (std::size_t k = m.parameters.size(); k < raw_args.size(); ++k) {
+        if (k > m.parameters.size()) {
+          pp_token comma;
+          comma.kind = pp_token_kind::punctuator;
+          comma.spelling = std::string_view{","};
+          merged.push_back(comma);
+        }
+        for (auto& t : raw_args[k]) merged.push_back(std::move(t));
+      }
+      raw_args.resize(m.parameters.size());
+      raw_args.push_back(std::move(merged));
+    } else {
+      if (raw_args.size() != m.parameters.size()) {
+        report(diagnostic_level::error, name_tok.location, "wrong number of arguments to function-like macro '" + m.name + "'");
+        queue.erase(queue.begin(), queue.begin() + rparen_idx + 1);
+        return true;
+      }
     }
 
     std::vector<std::vector<pp_token>> expanded_args;
@@ -325,7 +362,7 @@ private:
       expanded_args.push_back(expand_tokens(raw));
     }
 
-    auto substituted = substitute_body(m, expanded_args);
+    auto substituted = substitute_body(m, raw_args, expanded_args);
 
     auto new_hideset = hideset_intersect(caller_hideset, rparen_hideset);
     new_hideset = hideset_with(std::move(new_hideset), m.name);
@@ -350,23 +387,205 @@ private:
     return out;
   }
 
-  // Plain parameter substitution; does not yet implement # (stringify) or ## (paste).
-  constexpr std::vector<pp_token> substitute_body(macro_definition const& m, std::vector<std::vector<pp_token>> const& expanded_args) const
+  // Resolve __VA_OPT__(content) in the replacement list to either content or a placemarker,
+  // based on whether __VA_ARGS__ is non-empty. Called before the main substitution pass.
+  constexpr std::vector<pp_token> expand_va_opt(macro_definition const& m, std::vector<std::vector<pp_token>> const& raw_args)
   {
-    std::vector<pp_token> out;
-    out.reserve(m.replacement.size());
-    for (auto const& t : m.replacement) {
-      if (t.kind == pp_token_kind::identifier) {
-        auto it = std::ranges::find(m.parameters, t.spelling);
-        if (it != m.parameters.end()) {
-          auto idx = static_cast<std::size_t>(it - m.parameters.begin());
-          out.insert(out.end(), expanded_args[idx].begin(), expanded_args[idx].end());
-          continue;
+    auto const& repl = m.replacement;
+    std::size_t const n = repl.size();
+
+    if (!m.is_variadic) {
+      for (auto const& t : repl) {
+        if (t.kind == pp_token_kind::identifier && t.spelling == "__VA_OPT__") {
+          report(diagnostic_level::error, t.location, "'__VA_OPT__' is only valid inside variadic macros");
+          break;
         }
       }
-      out.push_back(t);
+      return repl;
     }
+
+    bool va_non_empty = false;
+    for (auto const& t : raw_args[m.parameters.size()]) {
+      if (t.kind != pp_token_kind::whitespace) {
+        va_non_empty = true;
+        break;
+      }
+    }
+
+    std::vector<pp_token> out;
+    out.reserve(n);
+
+    std::size_t i = 0;
+    while (i < n) {
+      auto const& t = repl[i];
+      if (t.kind == pp_token_kind::identifier && t.spelling == "__VA_OPT__") {
+        std::size_t j = i + 1;
+        while (j < n && repl[j].kind == pp_token_kind::whitespace) ++j;
+        if (j >= n || repl[j].kind != pp_token_kind::punctuator || repl[j].spelling != "(") {
+          report(diagnostic_level::error, t.location, "'__VA_OPT__' must be followed by '('");
+          out.push_back(t);
+          ++i;
+          continue;
+        }
+        int depth = 1;
+        std::size_t k = j + 1;
+        std::size_t const content_start = k;
+        while (k < n && depth > 0) {
+          auto const& tk = repl[k];
+          if (tk.kind == pp_token_kind::punctuator && tk.spelling == "(") ++depth;
+          else if (tk.kind == pp_token_kind::punctuator && tk.spelling == ")") {
+            --depth;
+            if (depth == 0) break;
+          } else if (tk.kind == pp_token_kind::identifier && tk.spelling == "__VA_OPT__") {
+            report(diagnostic_level::error, tk.location, "'__VA_OPT__' cannot be nested");
+          }
+          ++k;
+        }
+        if (k >= n) {
+          report(diagnostic_level::error, t.location, "unterminated '__VA_OPT__'");
+          break;
+        }
+        if (va_non_empty) {
+          for (std::size_t p = content_start; p < k; ++p) out.push_back(repl[p]);
+        } else {
+          out.push_back(make_placemarker(t.location));
+        }
+        i = k + 1;
+        continue;
+      }
+      out.push_back(t);
+      ++i;
+    }
+
     return out;
+  }
+
+  // Parameter substitution with ## (paste) and __VA_OPT__ resolution. `#` (stringify) is not yet implemented.
+  constexpr std::vector<pp_token> substitute_body(
+      macro_definition const& m,
+      std::vector<std::vector<pp_token>> const& raw_args,
+      std::vector<std::vector<pp_token>> const& expanded_args
+  )
+  {
+    auto const repl = expand_va_opt(m, raw_args);
+    std::size_t const n = repl.size();
+
+    auto is_paste = [&](std::size_t idx) -> bool {
+      return idx < n && repl[idx].kind == pp_token_kind::punctuator && repl[idx].spelling == "##";
+    };
+    auto skip_ws_fwd = [&](std::size_t idx) -> std::size_t {
+      while (idx < n && repl[idx].kind == pp_token_kind::whitespace) ++idx;
+      return idx;
+    };
+    auto param_idx = [&](pp_token const& t) -> std::size_t {
+      if (t.kind != pp_token_kind::identifier) return static_cast<std::size_t>(-1);
+      if (m.is_variadic && t.spelling == "__VA_ARGS__") return m.parameters.size();
+      auto it = std::ranges::find(m.parameters, t.spelling);
+      if (it == m.parameters.end()) return static_cast<std::size_t>(-1);
+      return static_cast<std::size_t>(it - m.parameters.begin());
+    };
+    auto trimmed_raw = [&](std::size_t pi, source_location loc) -> std::vector<pp_token> {
+      auto const& r = raw_args[pi];
+      std::size_t lo = 0, hi = r.size();
+      while (lo < hi && r[lo].kind == pp_token_kind::whitespace) ++lo;
+      while (hi > lo && r[hi - 1].kind == pp_token_kind::whitespace) --hi;
+      if (lo == hi) return {make_placemarker(loc)};
+      return std::vector<pp_token>(r.begin() + lo, r.begin() + hi);
+    };
+
+    std::vector<pp_token> out;
+    out.reserve(n);
+
+    std::size_t i = 0;
+    while (i < n) {
+      auto const& t = repl[i];
+
+      if (is_paste(i)) {
+        std::size_t const j = skip_ws_fwd(i + 1);
+        if (j >= n) {
+          report(diagnostic_level::error, t.location, "'##' at end of macro replacement list");
+          break;
+        }
+        while (!out.empty() && out.back().kind == pp_token_kind::whitespace) out.pop_back();
+
+        std::vector<pp_token> right;
+        auto const& rt = repl[j];
+        if (auto pi = param_idx(rt); pi != static_cast<std::size_t>(-1)) {
+          right = trimmed_raw(pi, rt.location);
+        } else {
+          right.push_back(rt);
+        }
+
+        if (out.empty()) {
+          report(diagnostic_level::error, t.location, "'##' at start of macro replacement list");
+          out.append_range(right);
+        } else {
+          pp_token left = std::move(out.back());
+          out.pop_back();
+          out.push_back(paste_tokens(left, right.front()));
+          for (std::size_t k = 1; k < right.size(); ++k) out.push_back(std::move(right[k]));
+        }
+        i = j + 1;
+        continue;
+      }
+
+      if (auto pi = param_idx(t); pi != static_cast<std::size_t>(-1)) {
+        if (is_paste(skip_ws_fwd(i + 1))) {
+          auto raw = trimmed_raw(pi, t.location);
+          for (auto& tok : raw) out.push_back(std::move(tok));
+        } else {
+          out.append_range(expanded_args[pi]);
+        }
+        ++i;
+        continue;
+      }
+
+      out.push_back(t);
+      ++i;
+    }
+
+    std::erase_if(out, [](pp_token const& tok) { return tok.kind == pp_token_kind::placemarker; });
+    return out;
+  }
+
+  constexpr pp_token make_placemarker(source_location loc) const
+  {
+    pp_token t;
+    t.kind = pp_token_kind::placemarker;
+    t.spelling = "";
+    t.location = loc;
+    return t;
+  }
+
+  constexpr pp_token paste_tokens(pp_token const& a, pp_token const& b)
+  {
+    bool const a_pm = a.kind == pp_token_kind::placemarker;
+    bool const b_pm = b.kind == pp_token_kind::placemarker;
+    if (a_pm && b_pm) return make_placemarker(a.location);
+    if (a_pm) return b;
+    if (b_pm) return a;
+
+    std::string joined;
+    joined.reserve(a.spelling.size() + b.spelling.size());
+    joined.append(a.spelling);
+    joined.append(b.spelling);
+
+    auto kind = classify_pasted(joined);
+    synth_strings_.emplace_back(std::move(joined));
+    pp_token t;
+    t.kind = kind;
+    t.spelling = std::string_view{*synth_strings_.back()};
+    t.location = a.location;
+    return t;
+  }
+
+  static constexpr pp_token_kind classify_pasted(std::string_view s) noexcept
+  {
+    if (s.empty()) return pp_token_kind::placemarker;
+    char c = s.front();
+    if (c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return pp_token_kind::identifier;
+    if (c >= '0' && c <= '9') return pp_token_kind::pp_number;
+    return pp_token_kind::other;
   }
 
   constexpr void push_front_tokens(expansion_queue& queue, std::vector<pp_token> const& tokens, std::vector<std::string> const& hideset)
