@@ -21,6 +21,11 @@ namespace yk::asteroid {
 template<class Sink = no_diagnostic_sink, class Handler = no_directive_handler>
 class preprocessor {
 public:
+  // Resolver signatures for __has_include / __has_embed. Receive the full header
+  // name including delimiters (`<foo.h>` or `"foo.h"`). Default (null) = not found.
+  using include_resolver_t = bool (*)(std::string_view header_name);
+  using embed_resolver_t = int (*)(std::string_view header_name);
+
   constexpr explicit preprocessor(lexer<Sink>& lx) : lexer_(&lx) {}
 
   constexpr preprocessor(lexer<Sink>& lx, Sink sink) : lexer_(&lx), sink_(std::move(sink)) {}
@@ -29,6 +34,9 @@ public:
 
   constexpr macro_table& macros() noexcept { return macros_; }
   constexpr macro_table const& macros() const noexcept { return macros_; }
+
+  constexpr void set_include_resolver(include_resolver_t r) noexcept { include_resolver_ = r; }
+  constexpr void set_embed_resolver(embed_resolver_t r) noexcept { embed_resolver_ = r; }
 
   constexpr pp_token next()
   {
@@ -91,6 +99,8 @@ private:
   expansion_queue pending_;
   std::vector<std::indirect<std::string>> synth_strings_;
   std::vector<cond_frame> cond_stack_;
+  include_resolver_t include_resolver_ = nullptr;
+  embed_resolver_t embed_resolver_ = nullptr;
   bool at_line_start_ = true;
   bool eof_emitted_ = false;
 
@@ -873,7 +883,8 @@ private:
   constexpr bool evaluate_condition(std::vector<pp_token> const& raw, source_location loc)
   {
     auto after_defined = apply_defined(raw, loc);
-    auto expanded = expand_tokens(std::move(after_defined));
+    auto after_has = apply_has_like(std::move(after_defined));
+    auto expanded = expand_tokens(std::move(after_has));
     ce_ctx c{&expanded};
     long long v = ce_parse_ternary(c);
     ce_skip_ws(c);
@@ -938,6 +949,198 @@ private:
     }
     (void)loc;
     return out;
+  }
+
+  // Resolve __has_include / __has_embed / __has_cpp_attribute to integer tokens.
+  // Runs after apply_defined and before macro expansion.
+  constexpr std::vector<pp_token> apply_has_like(std::vector<pp_token> in)
+  {
+    std::vector<pp_token> out;
+    out.reserve(in.size());
+    std::size_t i = 0;
+    while (i < in.size()) {
+      auto const& t = in[i];
+      if (t.kind == pp_token_kind::identifier) {
+        if (t.spelling == "__has_include") {
+          auto [v, next] = eval_has_include(in, i);
+          out.push_back(make_pp_number_token(v, t.location));
+          i = next;
+          continue;
+        }
+        if (t.spelling == "__has_embed") {
+          auto [v, next] = eval_has_embed(in, i);
+          out.push_back(make_pp_number_token(v, t.location));
+          i = next;
+          continue;
+        }
+        if (t.spelling == "__has_cpp_attribute") {
+          auto [v, next] = eval_has_cpp_attribute(in, i);
+          out.push_back(make_pp_number_token(v, t.location));
+          i = next;
+          continue;
+        }
+      }
+      out.push_back(t);
+      ++i;
+    }
+    return out;
+  }
+
+  static constexpr std::size_t skip_ws_at(std::vector<pp_token> const& v, std::size_t j) noexcept
+  {
+    while (j < v.size() && v[j].kind == pp_token_kind::whitespace) ++j;
+    return j;
+  }
+
+  // Parse the `( header-or-identifier )` suffix of a __has_include / __has_embed call.
+  // Returns (header_name_string, next_index). On failure, header is empty and next_index
+  // points past whatever we consumed.
+  constexpr std::pair<std::string, std::size_t> parse_header_arg(
+      std::vector<pp_token> const& in, std::size_t start, source_location loc)
+  {
+    std::size_t j = skip_ws_at(in, start);
+    if (j >= in.size() || in[j].kind != pp_token_kind::punctuator || in[j].spelling != "(") {
+      report(diagnostic_level::error, loc, "expected '(' after __has_include/__has_embed");
+      return {{}, j};
+    }
+    j = skip_ws_at(in, j + 1);
+    std::string header;
+    if (j < in.size() && in[j].kind == pp_token_kind::string_literal) {
+      header.assign(in[j].spelling);
+      ++j;
+    } else if (j < in.size() && in[j].kind == pp_token_kind::punctuator && in[j].spelling == "<") {
+      header.push_back('<');
+      ++j;
+      bool closed = false;
+      while (j < in.size()) {
+        auto const& tk = in[j];
+        if (tk.kind == pp_token_kind::punctuator && tk.spelling == ">") {
+          header.push_back('>');
+          ++j;
+          closed = true;
+          break;
+        }
+        if (tk.kind == pp_token_kind::newline) break;
+        if (tk.kind != pp_token_kind::whitespace) header.append(tk.spelling);
+        ++j;
+      }
+      if (!closed) {
+        report(diagnostic_level::error, loc, "unterminated '<...>' header name");
+        return {{}, j};
+      }
+    } else {
+      report(diagnostic_level::error, loc, "expected '<...>' or \"...\" header name");
+      return {{}, j};
+    }
+    // Skip any trailing pp-parameters (space-separated, balanced parens).
+    // E.g. `__has_embed(<h> limit(0) prefix(x))`.
+    {
+      int depth = 0;
+      while (j < in.size()) {
+        auto const& tk = in[j];
+        if (tk.kind == pp_token_kind::punctuator && tk.spelling == "(") ++depth;
+        else if (tk.kind == pp_token_kind::punctuator && tk.spelling == ")") {
+          if (depth == 0) break;
+          --depth;
+        }
+        ++j;
+      }
+    }
+    if (j >= in.size() || in[j].kind != pp_token_kind::punctuator || in[j].spelling != ")") {
+      report(diagnostic_level::error, loc, "expected ')'");
+      return {std::move(header), j};
+    }
+    ++j;
+    return {std::move(header), j};
+  }
+
+  constexpr std::pair<long long, std::size_t> eval_has_include(
+      std::vector<pp_token> const& in, std::size_t i)
+  {
+    auto [header, next] = parse_header_arg(in, i + 1, in[i].location);
+    if (header.empty()) return {0, next};
+    bool found = include_resolver_ && include_resolver_(header);
+    return {found ? 1 : 0, next};
+  }
+
+  constexpr std::pair<long long, std::size_t> eval_has_embed(
+      std::vector<pp_token> const& in, std::size_t i)
+  {
+    auto [header, next] = parse_header_arg(in, i + 1, in[i].location);
+    if (header.empty()) return {0, next};
+    int v = embed_resolver_ ? embed_resolver_(header) : 0;
+    return {v, next};
+  }
+
+  constexpr std::pair<long long, std::size_t> eval_has_cpp_attribute(
+      std::vector<pp_token> const& in, std::size_t i)
+  {
+    auto const loc = in[i].location;
+    std::size_t j = skip_ws_at(in, i + 1);
+    if (j >= in.size() || in[j].kind != pp_token_kind::punctuator || in[j].spelling != "(") {
+      report(diagnostic_level::error, loc, "expected '(' after __has_cpp_attribute");
+      return {0, j};
+    }
+    j = skip_ws_at(in, j + 1);
+    if (j >= in.size() || in[j].kind != pp_token_kind::identifier) {
+      report(diagnostic_level::error, loc, "expected attribute name");
+      return {0, j};
+    }
+    std::string name{in[j].spelling};
+    ++j;
+    std::size_t k = skip_ws_at(in, j);
+    if (k < in.size() && in[k].kind == pp_token_kind::punctuator && in[k].spelling == "::") {
+      k = skip_ws_at(in, k + 1);
+      if (k < in.size() && in[k].kind == pp_token_kind::identifier) {
+        name.append("::");
+        name.append(in[k].spelling);
+        j = k + 1;
+      }
+    }
+    j = skip_ws_at(in, j);
+    if (j >= in.size() || in[j].kind != pp_token_kind::punctuator || in[j].spelling != ")") {
+      report(diagnostic_level::error, loc, "expected ')'");
+      return {0, j};
+    }
+    ++j;
+    return {cpp_attribute_version(name), j};
+  }
+
+  static constexpr long long cpp_attribute_version(std::string_view name) noexcept
+  {
+    if (name == "assume") return 202207LL;
+    if (name == "carries_dependency") return 200809LL;
+    if (name == "deprecated") return 201309LL;
+    if (name == "fallthrough") return 201603LL;
+    if (name == "likely") return 201803LL;
+    if (name == "maybe_unused") return 201603LL;
+    if (name == "no_unique_address") return 201803LL;
+    if (name == "nodiscard") return 201907LL;
+    if (name == "noreturn") return 200809LL;
+    if (name == "unlikely") return 201803LL;
+    return 0;
+  }
+
+  constexpr pp_token make_pp_number_token(long long v, source_location loc)
+  {
+    std::string s;
+    if (v == 0) {
+      s = "0";
+    } else {
+      unsigned long long u = static_cast<unsigned long long>(v);
+      std::string digits;
+      while (u > 0) {
+        digits.push_back(static_cast<char>('0' + (u % 10)));
+        u /= 10;
+      }
+      for (auto it = digits.rbegin(); it != digits.rend(); ++it) s.push_back(*it);
+    }
+    synth_strings_.emplace_back(std::move(s));
+    pp_token t;
+    t.kind = pp_token_kind::pp_number;
+    t.spelling = std::string_view{*synth_strings_.back()};
+    t.location = loc;
+    return t;
   }
 
   static constexpr void ce_skip_ws(ce_ctx& c) noexcept

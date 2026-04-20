@@ -42,6 +42,44 @@ constexpr bool defines(std::string_view src, std::string_view name)
   return pp.macros().defined(name);
 }
 
+constexpr bool check_include(std::string_view src,
+                             bool (*resolver)(std::string_view),
+                             std::initializer_list<std::string_view> expected)
+{
+  line_splicer splicer{src};
+  lexer lx{splicer, "<test>"};
+  preprocessor pp{lx};
+  pp.set_include_resolver(resolver);
+  auto it = expected.begin();
+  while (!pp.at_end()) {
+    auto t = pp.next();
+    if (t.kind == pp_token_kind::end_of_file) break;
+    if (t.kind == pp_token_kind::whitespace || t.kind == pp_token_kind::newline) continue;
+    if (it == expected.end()) return false;
+    if (t.spelling != *it++) return false;
+  }
+  return it == expected.end();
+}
+
+constexpr bool check_embed(std::string_view src,
+                           int (*resolver)(std::string_view),
+                           std::initializer_list<std::string_view> expected)
+{
+  line_splicer splicer{src};
+  lexer lx{splicer, "<test>"};
+  preprocessor pp{lx};
+  pp.set_embed_resolver(resolver);
+  auto it = expected.begin();
+  while (!pp.at_end()) {
+    auto t = pp.next();
+    if (t.kind == pp_token_kind::end_of_file) break;
+    if (t.kind == pp_token_kind::whitespace || t.kind == pp_token_kind::newline) continue;
+    if (it == expected.end()) return false;
+    if (t.spelling != *it++) return false;
+  }
+  return it == expected.end();
+}
+
 static_assert(check("int x = 1;\n", {"int", "x", "=", "1", ";"}));
 static_assert(check("#define X 42\nX\n", {"42"}));
 static_assert(check("#define X X\nX\n", {"X"}));
@@ -162,6 +200,53 @@ static_assert(check("#ifdef A\na\n#elifndef B\nb\n#else\nc\n#endif\n", {"b"}));
 // Character literals in #if.
 static_assert(check("#if 'a' == 97\nyes\n#endif\n", {"yes"}));
 static_assert(check("#if '\\n' == 10\nyes\n#endif\n", {"yes"}));
+
+// -------------------------------------------------------------------------
+// __has_cpp_attribute: built-in version table.
+// -------------------------------------------------------------------------
+static_assert(check("#if __has_cpp_attribute(nodiscard)\ny\n#endif\n", {"y"}));
+static_assert(check("#if __has_cpp_attribute(nodiscard) >= 201603L\ny\n#endif\n", {"y"}));
+static_assert(check("#if __has_cpp_attribute(nodiscard) == 201907\ny\n#endif\n", {"y"}));
+static_assert(check("#if __has_cpp_attribute(fallthrough)\ny\n#endif\n", {"y"}));
+static_assert(check("#if __has_cpp_attribute(no_unique_address)\ny\n#endif\n", {"y"}));
+static_assert(check("#if __has_cpp_attribute(imaginary_attr)\ny\n#else\nn\n#endif\n", {"n"}));
+// Scoped attribute: unknown scope → 0.
+static_assert(check("#if __has_cpp_attribute(gnu::always_inline)\ny\n#else\nn\n#endif\n", {"n"}));
+
+// -------------------------------------------------------------------------
+// __has_include: overridable resolver, defaults to not-found.
+// -------------------------------------------------------------------------
+static_assert(check("#if __has_include(<foo.h>)\ny\n#else\nn\n#endif\n", {"n"}));
+static_assert(check("#if __has_include(\"foo.h\")\ny\n#else\nn\n#endif\n", {"n"}));
+
+static_assert(check_include(
+    "#if __has_include(<foo.h>)\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "<foo.h>"; }, {"y"}));
+static_assert(check_include(
+    "#if __has_include(<bar.h>)\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "<foo.h>"; }, {"n"}));
+static_assert(check_include(
+    "#if __has_include(\"my/path.h\")\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "\"my/path.h\""; }, {"y"}));
+// Header name with '/' and '.' between '<' '>'.
+static_assert(check_include(
+    "#if __has_include(<my/deep/path.h>)\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "<my/deep/path.h>"; }, {"y"}));
+
+// -------------------------------------------------------------------------
+// __has_embed: overridable resolver, values 0 (not-found), 1 (found), 2 (empty).
+// -------------------------------------------------------------------------
+static_assert(check("#if __has_embed(<data.bin>)\ny\n#else\nn\n#endif\n", {"n"}));
+static_assert(check_embed(
+    "#if __has_embed(<data.bin>) == 1\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "<data.bin>" ? 1 : 0; }, {"y"}));
+static_assert(check_embed(
+    "#if __has_embed(<empty.bin>) == 2\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "<empty.bin>" ? 2 : 0; }, {"y"}));
+// Extra trailing pp-parameters are skipped for lookup (space-separated per C23).
+static_assert(check_embed(
+    "#if __has_embed(<data.bin> prefix(x) suffix(y))\ny\n#else\nn\n#endif\n",
+    +[](std::string_view h) { return h == "<data.bin>" ? 1 : 0; }, {"y"}));
 
 }  // namespace
 
