@@ -33,12 +33,8 @@ inline constexpr std::array<punctuator_entry, 5> punctuators_len3 = {{
 }};
 
 inline constexpr std::array<punctuator_entry, 30> punctuators_len2 = {{
-    {"##"}, {"<%"}, {"%>"}, {"<:"}, {":>"}, {"%:"},
-    {"::"}, {".*"}, {"->"}, {"++"}, {"--"},
-    {"<<"}, {">>"}, {"<="}, {">="}, {"=="}, {"!="},
-    {"&&"}, {"||"}, {"+="}, {"-="}, {"*="}, {"/="},
-    {"%="}, {"^="}, {"&="}, {"|="},
-    {"[:"}, {":]"}, {"^^"},
+    {"##"}, {"<%"}, {"%>"}, {"<:"}, {":>"}, {"%:"}, {"::"}, {".*"}, {"->"}, {"++"}, {"--"}, {"<<"}, {">>"}, {"<="}, {">="},
+    {"=="}, {"!="}, {"&&"}, {"||"}, {"+="}, {"-="}, {"*="}, {"/="}, {"%="}, {"^="}, {"&="}, {"|="}, {"[:"}, {":]"}, {"^^"},
 }};
 
 inline constexpr std::string_view punctuators_len1 = "{}[]();:?.~!+-*/%^&|=<>,#";
@@ -48,15 +44,9 @@ inline constexpr std::string_view punctuators_len1 = "{}[]();:?.~!+-*/%^&|=<>,#"
 template<class Sink = no_diagnostic_sink>
 class lexer {
 public:
-  constexpr lexer(line_splicer const& splicer, std::string_view file_name)
-    : splicer_(&splicer), file_name_(file_name)
-  {
-  }
+  constexpr lexer(line_splicer const& splicer, std::string_view file_name) : splicer_(&splicer), file_name_(file_name) {}
 
-  constexpr lexer(line_splicer const& splicer, std::string_view file_name, Sink sink)
-    : splicer_(&splicer), file_name_(file_name), sink_(std::move(sink))
-  {
-  }
+  constexpr lexer(line_splicer const& splicer, std::string_view file_name, Sink sink) : splicer_(&splicer), file_name_(file_name), sink_(std::move(sink)) {}
 
   constexpr pp_token next()
   {
@@ -148,10 +138,7 @@ private:
     return source_location{file_name_, splicer_->physical_offset(logical_offset), loc.line, loc.column};
   }
 
-  constexpr void report(diagnostic_level level, source_location loc, std::string msg) const
-  {
-    sink_(diagnostic{level, std::move(loc), std::move(msg)});
-  }
+  constexpr void report(diagnostic_level level, source_location loc, std::string msg) const { sink_(diagnostic{level, std::move(loc), std::move(msg)}); }
 
   constexpr pp_token make_token(pp_token_kind kind, std::size_t start) const noexcept
   {
@@ -230,8 +217,7 @@ private:
     // [lex.pptoken] disambiguation: if the next three characters are `<::` or `[::`
     // and the subsequent character is neither `:` nor `>`, treat the first character
     // as a single-char punctuator, not as the opening of the alternative token / splice.
-    if (remaining.size() >= 3 && (remaining[0] == '<' || remaining[0] == '[')
-        && remaining[1] == ':' && remaining[2] == ':') {
+    if (remaining.size() >= 3 && (remaining[0] == '<' || remaining[0] == '[') && remaining[1] == ':' && remaining[2] == ':') {
       if (remaining.size() == 3 || (remaining[3] != ':' && remaining[3] != '>')) {
         ++pos_;
         return make_token(pp_token_kind::punctuator, start);
@@ -301,8 +287,7 @@ private:
     if (pos_ < src.size() && src[pos_] == quote) {
       ++pos_;
     } else {
-      report(diagnostic_level::error, location_at(start),
-             quote == '\'' ? "unterminated character literal" : "unterminated string literal");
+      report(diagnostic_level::error, location_at(start), quote == '\'' ? "unterminated character literal" : "unterminated string literal");
     }
 
     while (pos_ < src.size() && is_id_continue(src[pos_])) ++pos_;
@@ -330,8 +315,7 @@ private:
     std::size_t q = dchar_begin;
     while (q < spliced.size() && q - dchar_begin < 16) {
       char const ch = spliced[q];
-      if (ch == '(' || ch == ')' || ch == '"' || ch == '\\' || ch == ' '
-          || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\n') break;
+      if (ch == '(' || ch == ')' || ch == '"' || ch == '\\' || ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\n') break;
       ++q;
     }
     if (q >= spliced.size() || spliced[q] != '(') return std::nullopt;
@@ -349,9 +333,7 @@ private:
     if (found == std::string_view::npos) {
       report(diagnostic_level::error, location_at(start), "unterminated raw string literal");
       pos_ = spliced.size();
-      return pp_token{pp_token_kind::string_literal,
-                      source.substr(splicer_->physical_offset(start)),
-                      location_at(start)};
+      return pp_token{pp_token_kind::string_literal, source.substr(splicer_->physical_offset(start)), location_at(start)};
     }
 
     std::size_t const phys_end = found + terminator.size();
@@ -364,9 +346,7 @@ private:
     std::size_t const phys_start = splicer_->physical_offset(start);
     std::size_t const phys_suffix_end = splicer_->physical_offset(pos_);
 
-    return pp_token{pp_token_kind::string_literal,
-                    source.substr(phys_start, phys_suffix_end - phys_start),
-                    location_at(start)};
+    return pp_token{pp_token_kind::string_literal, source.substr(phys_start, phys_suffix_end - phys_start), location_at(start)};
   }
 };
 

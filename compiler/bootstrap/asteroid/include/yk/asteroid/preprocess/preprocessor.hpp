@@ -22,15 +22,9 @@ class preprocessor {
 public:
   constexpr explicit preprocessor(lexer<Sink>& lx) : lexer_(&lx) {}
 
-  constexpr preprocessor(lexer<Sink>& lx, Sink sink)
-    : lexer_(&lx), sink_(std::move(sink))
-  {
-  }
+  constexpr preprocessor(lexer<Sink>& lx, Sink sink) : lexer_(&lx), sink_(std::move(sink)) {}
 
-  constexpr preprocessor(lexer<Sink>& lx, Sink sink, Handler handler)
-    : lexer_(&lx), sink_(std::move(sink)), handler_(std::move(handler))
-  {
-  }
+  constexpr preprocessor(lexer<Sink>& lx, Sink sink, Handler handler) : lexer_(&lx), sink_(std::move(sink)), handler_(std::move(handler)) {}
 
   constexpr macro_table& macros() noexcept { return macros_; }
   constexpr macro_table const& macros() const noexcept { return macros_; }
@@ -149,9 +143,14 @@ private:
     collect_until_newline(d.tokens);
 
     switch (d.kind) {
-      case directive_kind::define: handle_define(d); break;
-      case directive_kind::undef:  handle_undef(d); break;
-      default: break;
+      case directive_kind::define:
+        handle_define(d);
+        break;
+      case directive_kind::undef:
+        handle_undef(d);
+        break;
+      default:
+        break;
     }
 
     handler_(d);
@@ -172,9 +171,7 @@ private:
     m.name = std::string{name_tok.spelling};
     m.location = name_tok.location;
 
-    bool const function_like = i < toks.size()
-                               && toks[i].kind == pp_token_kind::punctuator
-                               && toks[i].spelling == "(";
+    bool const function_like = i < toks.size() && toks[i].kind == pp_token_kind::punctuator && toks[i].spelling == "(";
     if (function_like) {
       m.is_function_like = true;
       ++i;  // consume `(`
@@ -225,8 +222,7 @@ private:
     m.replacement.assign(toks.begin() + i, toks.begin() + end);
 
     if (auto prev = macros_.lookup(m.name); prev && !macros_equivalent(*prev, m)) {
-      report(diagnostic_level::warning, name_tok.location,
-             "macro '" + m.name + "' redefined with a different body");
+      report(diagnostic_level::warning, name_tok.location, "macro '" + m.name + "' redefined with a different body");
     }
     macros_.define(std::move(m));
   }
@@ -260,9 +256,8 @@ private:
   }
 
   constexpr bool parse_function_like_call(
-      pp_token const& name_tok, macro_definition const& m,
-      std::vector<std::string> const& caller_hideset,
-      expansion_queue& queue, bool lexer_refill)
+      pp_token const& name_tok, macro_definition const& m, std::vector<std::string> const& caller_hideset, expansion_queue& queue, bool lexer_refill
+  )
   {
     auto ensure = [&](std::size_t idx) -> bool {
       while (queue.size() <= idx) {
@@ -319,8 +314,7 @@ private:
     }
 
     if (raw_args.size() != m.parameters.size()) {
-      report(diagnostic_level::error, name_tok.location,
-             "wrong number of arguments to function-like macro '" + m.name + "'");
+      report(diagnostic_level::error, name_tok.location, "wrong number of arguments to function-like macro '" + m.name + "'");
       queue.erase(queue.begin(), queue.begin() + rparen_idx + 1);
       return true;
     }
@@ -357,9 +351,7 @@ private:
   }
 
   // Plain parameter substitution; does not yet implement # (stringify) or ## (paste).
-  constexpr std::vector<pp_token> substitute_body(
-      macro_definition const& m,
-      std::vector<std::vector<pp_token>> const& expanded_args) const
+  constexpr std::vector<pp_token> substitute_body(macro_definition const& m, std::vector<std::vector<pp_token>> const& expanded_args) const
   {
     std::vector<pp_token> out;
     out.reserve(m.replacement.size());
@@ -377,30 +369,19 @@ private:
     return out;
   }
 
-  constexpr void push_front_tokens(expansion_queue& queue,
-                                   std::vector<pp_token> const& tokens,
-                                   std::vector<std::string> const& hideset)
+  constexpr void push_front_tokens(expansion_queue& queue, std::vector<pp_token> const& tokens, std::vector<std::string> const& hideset)
   {
     std::vector<pending_token> batch;
     batch.reserve(tokens.size());
     for (auto const& t : tokens) batch.push_back(pending_token{t, hideset});
-    queue.insert(queue.begin(),
-                 std::make_move_iterator(batch.begin()),
-                 std::make_move_iterator(batch.end()));
+    queue.insert(queue.begin(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
   }
 
-  constexpr void report(diagnostic_level lvl, source_location const& loc, std::string msg) const
-  {
-    sink_(diagnostic{lvl, loc, std::move(msg)});
-  }
+  constexpr void report(diagnostic_level lvl, source_location const& loc, std::string msg) const { sink_(diagnostic{lvl, loc, std::move(msg)}); }
 
-  static constexpr bool in_hideset(std::vector<std::string> const& hs, std::string_view name) noexcept
-  {
-    return std::ranges::contains(hs, name);
-  }
+  static constexpr bool in_hideset(std::vector<std::string> const& hs, std::string_view name) noexcept { return std::ranges::contains(hs, name); }
 
-  static constexpr std::vector<std::string> hideset_intersect(std::vector<std::string> const& a,
-                                                              std::vector<std::string> const& b)
+  static constexpr std::vector<std::string> hideset_intersect(std::vector<std::string> const& a, std::vector<std::string> const& b)
   {
     std::vector<std::string> out;
     for (auto const& s : a) {

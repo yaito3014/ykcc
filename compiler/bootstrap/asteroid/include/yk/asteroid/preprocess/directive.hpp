@@ -62,10 +62,7 @@ constexpr directive_kind classify_directive_name(std::string_view name) noexcept
   return directive_kind::unknown;
 }
 
-constexpr bool directive_expects_header_name(directive_kind k) noexcept
-{
-  return k == directive_kind::include || k == directive_kind::embed;
-}
+constexpr bool directive_expects_header_name(directive_kind k) noexcept { return k == directive_kind::include || k == directive_kind::embed; }
 
 }  // namespace yk::asteroid
 
