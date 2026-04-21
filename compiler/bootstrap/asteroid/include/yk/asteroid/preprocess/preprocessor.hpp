@@ -640,7 +640,10 @@ private:
 
     if (!m->is_function_like) {
       auto new_hideset = hideset_with(pt.hideset, pt.tok.spelling);
-      push_front_tokens(queue, m->replacement, new_hideset);
+      std::vector<pending_token> body;
+      body.reserve(m->replacement.size());
+      for (auto const& t : m->replacement) body.push_back(pending_token{t, {}});
+      push_front_tokens(queue, body, new_hideset);
       return true;
     }
 
@@ -677,24 +680,25 @@ private:
 
     std::size_t depth = 1;
     std::size_t i = peek + 1;
-    std::vector<std::vector<pp_token>> raw_args;
+    std::vector<std::vector<pending_token>> raw_args;
     raw_args.emplace_back();
     while (true) {
       if (!ensure(i)) {
         report(diagnostic_level::error, name_tok.location, "unterminated macro invocation");
         return false;
       }
-      auto const& t = queue[i].tok;
+      auto const& pt = queue[i];
+      auto const& t = pt.tok;
       if (t.kind == pp_token_kind::punctuator && t.spelling == "(") {
         ++depth;
-        raw_args.back().push_back(t);
+        raw_args.back().push_back(pt);
       } else if (t.kind == pp_token_kind::punctuator && t.spelling == ")") {
         if (--depth == 0) break;
-        raw_args.back().push_back(t);
+        raw_args.back().push_back(pt);
       } else if (depth == 1 && t.kind == pp_token_kind::punctuator && t.spelling == ",") {
         raw_args.emplace_back();
       } else {
-        raw_args.back().push_back(t);
+        raw_args.back().push_back(pt);
       }
       ++i;
     }
@@ -711,13 +715,13 @@ private:
         queue.erase(queue.begin(), queue.begin() + rparen_idx + 1);
         return true;
       }
-      std::vector<pp_token> merged;
+      std::vector<pending_token> merged;
       for (std::size_t k = m.parameters.size(); k < raw_args.size(); ++k) {
         if (k > m.parameters.size()) {
           pp_token comma;
           comma.kind = pp_token_kind::punctuator;
           comma.spelling = std::string_view{","};
-          merged.push_back(comma);
+          merged.push_back(pending_token{comma, {}});
         }
         for (auto& t : raw_args[k]) merged.push_back(std::move(t));
       }
@@ -731,10 +735,10 @@ private:
       }
     }
 
-    std::vector<std::vector<pp_token>> expanded_args;
+    std::vector<std::vector<pending_token>> expanded_args;
     expanded_args.reserve(raw_args.size());
     for (auto const& raw : raw_args) {
-      expanded_args.push_back(expand_tokens(raw));
+      expanded_args.push_back(expand_pending(raw));
     }
 
     auto substituted = substitute_body(m, raw_args, expanded_args);
@@ -747,24 +751,36 @@ private:
     return true;
   }
 
-  constexpr std::vector<pp_token> expand_tokens(std::vector<pp_token> tokens)
+  constexpr std::vector<pending_token> expand_pending(std::vector<pending_token> tokens)
   {
     expansion_queue q;
     q.reserve(tokens.size());
-    for (auto& t : tokens) q.push_back(pending_token{std::move(t), {}});
-    std::vector<pp_token> out;
+    for (auto& pt : tokens) q.push_back(std::move(pt));
+    std::vector<pending_token> out;
     while (!q.empty()) {
       pending_token pt = std::move(q.front());
       q.erase(q.begin());
       if (try_expand_into(pt, q, /*lexer_refill=*/false)) continue;
-      out.push_back(std::move(pt.tok));
+      out.push_back(std::move(pt));
     }
+    return out;
+  }
+
+  constexpr std::vector<pp_token> expand_tokens(std::vector<pp_token> tokens)
+  {
+    std::vector<pending_token> pending;
+    pending.reserve(tokens.size());
+    for (auto& t : tokens) pending.push_back(pending_token{std::move(t), {}});
+    auto result = expand_pending(std::move(pending));
+    std::vector<pp_token> out;
+    out.reserve(result.size());
+    for (auto& pt : result) out.push_back(std::move(pt.tok));
     return out;
   }
 
   // Resolve __VA_OPT__(content) in the replacement list to either content or a placemarker,
   // based on whether __VA_ARGS__ is non-empty. Called before the main substitution pass.
-  constexpr std::vector<pp_token> expand_va_opt(macro_definition const& m, std::vector<std::vector<pp_token>> const& raw_args)
+  constexpr std::vector<pp_token> expand_va_opt(macro_definition const& m, std::vector<std::vector<pending_token>> const& raw_args)
   {
     auto const& repl = m.replacement;
     std::size_t const n = repl.size();
@@ -780,8 +796,8 @@ private:
     }
 
     bool va_non_empty = false;
-    for (auto const& t : raw_args[m.parameters.size()]) {
-      if (t.kind != pp_token_kind::whitespace) {
+    for (auto const& pt : raw_args[m.parameters.size()]) {
+      if (pt.tok.kind != pp_token_kind::whitespace) {
         va_non_empty = true;
         break;
       }
@@ -838,10 +854,10 @@ private:
   // Two-pass substitution. Pass 1 resolves `#` (stringify) and parameter substitution
   // (raw tokens if adjacent to `##`, otherwise fully expanded tokens), leaving `##`
   // tokens in place. Pass 2 processes `##` left to right with placemarker collapsing.
-  constexpr std::vector<pp_token> substitute_body(
+  constexpr std::vector<pending_token> substitute_body(
       macro_definition const& m,
-      std::vector<std::vector<pp_token>> const& raw_args,
-      std::vector<std::vector<pp_token>> const& expanded_args
+      std::vector<std::vector<pending_token>> const& raw_args,
+      std::vector<std::vector<pending_token>> const& expanded_args
   )
   {
     auto const repl = expand_va_opt(m, raw_args);
@@ -871,7 +887,7 @@ private:
       return k > 0 && is_paste(k - 1);
     };
 
-    std::vector<pp_token> stage1;
+    std::vector<pending_token> stage1;
     stage1.reserve(n);
 
     std::size_t i = 0;
@@ -887,11 +903,11 @@ private:
         auto const pi = param_idx(repl[j]);
         if (pi == static_cast<std::size_t>(-1)) {
           report(diagnostic_level::error, t.location, "'#' is not followed by a macro parameter");
-          stage1.push_back(t);
+          stage1.push_back(pending_token{t, {}});
           ++i;
           continue;
         }
-        stage1.push_back(stringify(raw_args[pi], t.location));
+        stage1.push_back(pending_token{stringify(raw_args[pi], t.location), {}});
         i = j + 1;
         continue;
       }
@@ -900,10 +916,10 @@ private:
         if (paste_adjacent(i)) {
           auto const& r = raw_args[pi];
           std::size_t lo = 0, hi = r.size();
-          while (lo < hi && r[lo].kind == pp_token_kind::whitespace) ++lo;
-          while (hi > lo && r[hi - 1].kind == pp_token_kind::whitespace) --hi;
+          while (lo < hi && r[lo].tok.kind == pp_token_kind::whitespace) ++lo;
+          while (hi > lo && r[hi - 1].tok.kind == pp_token_kind::whitespace) --hi;
           if (lo == hi) {
-            stage1.push_back(make_placemarker(t.location));
+            stage1.push_back(pending_token{make_placemarker(t.location), {}});
           } else {
             for (std::size_t k = lo; k < hi; ++k) stage1.push_back(r[k]);
           }
@@ -914,20 +930,20 @@ private:
         continue;
       }
 
-      stage1.push_back(t);
+      stage1.push_back(pending_token{t, {}});
       ++i;
     }
 
     std::size_t const sn = stage1.size();
     auto s_is_paste = [&](std::size_t idx) -> bool {
-      return idx < sn && stage1[idx].kind == pp_token_kind::punctuator && stage1[idx].spelling == "##";
+      return idx < sn && stage1[idx].tok.kind == pp_token_kind::punctuator && stage1[idx].tok.spelling == "##";
     };
     auto s_skip_ws_fwd = [&](std::size_t idx) -> std::size_t {
-      while (idx < sn && stage1[idx].kind == pp_token_kind::whitespace) ++idx;
+      while (idx < sn && stage1[idx].tok.kind == pp_token_kind::whitespace) ++idx;
       return idx;
     };
 
-    std::vector<pp_token> out;
+    std::vector<pending_token> out;
     out.reserve(sn);
 
     std::size_t i2 = 0;
@@ -935,17 +951,17 @@ private:
       if (s_is_paste(i2)) {
         std::size_t const j = s_skip_ws_fwd(i2 + 1);
         if (j >= sn) {
-          report(diagnostic_level::error, stage1[i2].location, "'##' at end of macro replacement list");
+          report(diagnostic_level::error, stage1[i2].tok.location, "'##' at end of macro replacement list");
           break;
         }
-        while (!out.empty() && out.back().kind == pp_token_kind::whitespace) out.pop_back();
+        while (!out.empty() && out.back().tok.kind == pp_token_kind::whitespace) out.pop_back();
         if (out.empty()) {
-          report(diagnostic_level::error, stage1[i2].location, "'##' at start of macro replacement list");
+          report(diagnostic_level::error, stage1[i2].tok.location, "'##' at start of macro replacement list");
           out.push_back(stage1[j]);
         } else {
-          pp_token left = std::move(out.back());
+          pp_token left = std::move(out.back().tok);
           out.pop_back();
-          out.push_back(paste_tokens(left, stage1[j]));
+          out.push_back(pending_token{paste_tokens(left, stage1[j].tok), {}});
         }
         i2 = j + 1;
         continue;
@@ -954,21 +970,21 @@ private:
       ++i2;
     }
 
-    std::erase_if(out, [](pp_token const& tok) { return tok.kind == pp_token_kind::placemarker; });
+    std::erase_if(out, [](pending_token const& pt) { return pt.tok.kind == pp_token_kind::placemarker; });
     return out;
   }
 
-  constexpr pp_token stringify(std::vector<pp_token> const& raw, source_location loc)
+  constexpr pp_token stringify(std::vector<pending_token> const& raw, source_location loc)
   {
     std::size_t lo = 0, hi = raw.size();
-    while (lo < hi && raw[lo].kind == pp_token_kind::whitespace) ++lo;
-    while (hi > lo && raw[hi - 1].kind == pp_token_kind::whitespace) --hi;
+    while (lo < hi && raw[lo].tok.kind == pp_token_kind::whitespace) ++lo;
+    while (hi > lo && raw[hi - 1].tok.kind == pp_token_kind::whitespace) --hi;
 
     std::string body;
     bool prev_ws = false;
     bool started = false;
     for (std::size_t i = lo; i < hi; ++i) {
-      auto const& t = raw[i];
+      auto const& t = raw[i].tok;
       if (t.kind == pp_token_kind::whitespace || t.kind == pp_token_kind::newline) {
         if (started) prev_ws = true;
         continue;
@@ -1038,11 +1054,17 @@ private:
     return pp_token_kind::other;
   }
 
-  constexpr void push_front_tokens(expansion_queue& queue, std::vector<pp_token> const& tokens, std::vector<std::string> const& hideset)
+  constexpr void push_front_tokens(expansion_queue& queue, std::vector<pending_token> const& tokens, std::vector<std::string> const& extra_hideset)
   {
     std::vector<pending_token> batch;
     batch.reserve(tokens.size());
-    for (auto const& t : tokens) batch.push_back(pending_token{t, hideset});
+    for (auto const& pt : tokens) {
+      pending_token copy = pt;
+      for (auto const& name : extra_hideset) {
+        if (!in_hideset(copy.hideset, name)) copy.hideset.push_back(name);
+      }
+      batch.push_back(std::move(copy));
+    }
     queue.insert(queue.begin(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
   }
 

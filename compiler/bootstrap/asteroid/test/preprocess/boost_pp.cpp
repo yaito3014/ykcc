@@ -208,6 +208,41 @@ TEST_CASE("Boost.PP: BOOST_PP_IIF / BOOL")
   CHECK(out.spellings[1] == "no");
 }
 
+TEST_CASE("Boost.PP: BOOST_PP_LESS / NOT_EQUAL equality boundary")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/comparison/less.hpp>\n"
+      "#include <boost/preprocessor/comparison/not_equal.hpp>\n"
+      "BOOST_PP_LESS(0, 5) BOOST_PP_LESS(4, 5) BOOST_PP_LESS(5, 5) BOOST_PP_LESS(6, 5)\n"
+      "BOOST_PP_NOT_EQUAL(3, 3) BOOST_PP_NOT_EQUAL(3, 4)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 6);
+  CHECK(out.spellings[0] == "1");
+  CHECK(out.spellings[1] == "1");
+  CHECK(out.spellings[2] == "0");
+  CHECK(out.spellings[3] == "0");
+  CHECK(out.spellings[4] == "0");
+  CHECK(out.spellings[5] == "1");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_WHILE counts up using LESS")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/control/while.hpp>\n"
+      "#include <boost/preprocessor/arithmetic/inc.hpp>\n"
+      "#include <boost/preprocessor/comparison/less.hpp>\n"
+      "#define PRED(d, state) BOOST_PP_LESS(state, 5)\n"
+      "#define OP(d, state) BOOST_PP_INC(state)\n"
+      "BOOST_PP_WHILE(PRED, OP, 0)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 1);
+  CHECK(out.spellings[0] == "5");
+}
+
 TEST_CASE("Boost.PP: BOOST_PP_WHILE counts down to 0")
 {
   if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
