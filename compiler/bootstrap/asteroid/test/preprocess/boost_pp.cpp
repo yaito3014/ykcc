@@ -208,6 +208,80 @@ TEST_CASE("Boost.PP: BOOST_PP_IIF / BOOL")
   CHECK(out.spellings[1] == "no");
 }
 
+TEST_CASE("Boost.PP: BOOST_PP_WHILE counts down to 0")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/control/while.hpp>\n"
+      "#include <boost/preprocessor/arithmetic/dec.hpp>\n"
+      "#define PRED(d, state) state\n"
+      "#define OP(d, state) BOOST_PP_DEC(state)\n"
+      "BOOST_PP_WHILE(PRED, OP, 5)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 1);
+  CHECK(out.spellings[0] == "0");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_MUL (WHILE-based)")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/arithmetic/mul.hpp>\n"
+      "BOOST_PP_MUL(4, 5)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 1);
+  CHECK(out.spellings[0] == "20");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_DIV / MOD")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/arithmetic/div.hpp>\n"
+      "#include <boost/preprocessor/arithmetic/mod.hpp>\n"
+      "BOOST_PP_DIV(23, 4)\n"
+      "BOOST_PP_MOD(23, 4)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 2);
+  CHECK(out.spellings[0] == "5");
+  CHECK(out.spellings[1] == "3");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_COMMA_IF")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/punctuation/comma_if.hpp>\n"
+      "x BOOST_PP_COMMA_IF(0) y\n"
+      "x BOOST_PP_COMMA_IF(1) y\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 5);
+  CHECK(out.spellings[0] == "x");
+  CHECK(out.spellings[1] == "y");
+  CHECK(out.spellings[2] == "x");
+  CHECK(out.spellings[3] == ",");
+  CHECK(out.spellings[4] == "y");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_ARRAY_ELEM / ARRAY_SIZE")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/array/elem.hpp>\n"
+      "#include <boost/preprocessor/array/size.hpp>\n"
+      "BOOST_PP_ARRAY_ELEM(2, (4, (a, b, c, d)))\n"
+      "BOOST_PP_ARRAY_SIZE((4, (a, b, c, d)))\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 2);
+  CHECK(out.spellings[0] == "c");
+  CHECK(out.spellings[1] == "4");
+}
+
 TEST_CASE("Boost.PP: nested BOOST_PP_REPEAT")
 {
   if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
