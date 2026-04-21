@@ -5,6 +5,7 @@
 #include <yk/asteroid/preprocess/preprocessor.hpp>
 
 #include <initializer_list>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -69,6 +70,26 @@ constexpr bool check_embed(std::string_view src,
   lexer lx{splicer, "<test>"};
   preprocessor pp{lx};
   pp.set_embed_resolver(resolver);
+  auto it = expected.begin();
+  while (!pp.at_end()) {
+    auto t = pp.next();
+    if (t.kind == pp_token_kind::end_of_file) break;
+    if (t.kind == pp_token_kind::whitespace || t.kind == pp_token_kind::newline) continue;
+    if (it == expected.end()) return false;
+    if (t.spelling != *it++) return false;
+  }
+  return it == expected.end();
+}
+
+constexpr bool check_with_source(
+    std::string_view src,
+    bool (*source)(std::string_view, std::string_view, std::string&, std::string&),
+    std::initializer_list<std::string_view> expected)
+{
+  line_splicer splicer{src};
+  lexer lx{splicer, "<test>"};
+  preprocessor pp{lx};
+  pp.set_include_source(source);
   auto it = expected.begin();
   while (!pp.at_end()) {
     auto t = pp.next();
@@ -247,6 +268,80 @@ static_assert(check_embed(
 static_assert(check_embed(
     "#if __has_embed(<data.bin> prefix(x) suffix(y))\ny\n#else\nn\n#endif\n",
     +[](std::string_view h) { return h == "<data.bin>" ? 1 : 0; }, {"y"}));
+
+// -------------------------------------------------------------------------
+// #include: resolver-driven source loading.
+// -------------------------------------------------------------------------
+
+// Basic #include pulling in tokens from another file.
+static_assert(check_with_source(
+    "#include <a.h>\nafter\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "<a.h>") { p = "a.h"; c = "x y z\n"; return true; }
+      return false;
+    },
+    {"x", "y", "z", "after"}));
+
+// Included file can define a macro visible after the #include.
+static_assert(check_with_source(
+    "#include <m.h>\nFOO\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "<m.h>") { p = "m.h"; c = "#define FOO 42\n"; return true; }
+      return false;
+    },
+    {"42"}));
+
+// Quoted header form.
+static_assert(check_with_source(
+    "#include \"b.h\"\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "\"b.h\"") { p = "b.h"; c = "hello\n"; return true; }
+      return false;
+    },
+    {"hello"}));
+
+// Nested #include: a.h includes b.h.
+static_assert(check_with_source(
+    "#include <a.h>\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "<a.h>") { p = "a.h"; c = "A\n#include <b.h>\nC\n"; return true; }
+      if (h == "<b.h>") { p = "b.h"; c = "B\n"; return true; }
+      return false;
+    },
+    {"A", "B", "C"}));
+
+// Conditional inside included file skips correctly.
+static_assert(check_with_source(
+    "#define FLAG\n#include <c.h>\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "<c.h>") { p = "c.h"; c = "#ifdef FLAG\nyes\n#else\nno\n#endif\n"; return true; }
+      return false;
+    },
+    {"yes"}));
+
+// #pragma once: second include is a no-op.
+static_assert(check_with_source(
+    "#include <once.h>\n#include <once.h>\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "<once.h>") { p = "once.h"; c = "#pragma once\nx\n"; return true; }
+      return false;
+    },
+    {"x"}));
+
+// Missing header: resolver returns false, diagnostic emitted, preprocessing continues.
+static_assert(check_with_source(
+    "#include <missing.h>\nafter\n",
+    +[](std::string_view, std::string_view, std::string&, std::string&) { return false; },
+    {"after"}));
+
+// Macro-expanded header name: `#include HDR` where HDR expands to `<foo.h>`.
+static_assert(check_with_source(
+    "#define HDR <foo.h>\n#include HDR\n",
+    +[](std::string_view h, std::string_view, std::string& p, std::string& c) {
+      if (h == "<foo.h>") { p = "foo.h"; c = "ok\n"; return true; }
+      return false;
+    },
+    {"ok"}));
 
 }  // namespace
 

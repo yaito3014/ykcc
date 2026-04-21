@@ -40,11 +40,16 @@ public:
   // errors.
   //
   // Why out-parameters instead of returning a struct? gcc-trunk (as of
-  // 16.0.1) fails "dereferencing a null pointer" when a captureless lambda
-  // returning a class type with non-trivial members (std::string,
-  // std::optional<std::string>, …) is called through a function pointer
-  // during constant evaluation. Returning bool sidesteps the bug and keeps
-  // the test idiom `+[](...){ ... }` working.
+  // 16.0.1) rejects with "dereferencing a null pointer" when a captureless
+  // lambda is converted via `+[]` to a function pointer and called through
+  // that pointer in constant evaluation, if the return type is a class with
+  // non-trivial members (std::string, std::optional<std::string>, …). A
+  // named `constexpr` function with the same return type works; a trivial
+  // return type (e.g. `struct { int; int; }`) through the same `+[]`
+  // conversion also works. Likely cause: sret ABI uses a hidden return
+  // pointer that gcc's constexpr interpreter doesn't wire up through the
+  // synthesized lambda→fp thunk. Returning bool keeps the return trivial
+  // and preserves the `+[](...){ ... }` idiom in tests.
   using include_source_t = bool (*)(std::string_view header_name, std::string_view from_file,
                                      std::string& out_path, std::string& out_content);
 
