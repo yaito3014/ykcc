@@ -128,3 +128,99 @@ TEST_CASE("Boost.PP: BOOST_PP_REPEAT emits N copies")
   CHECK(out.spellings[1] == "x1");
   CHECK(out.spellings[2] == "x2");
 }
+
+TEST_CASE("Boost.PP: BOOST_PP_SEQ_FOR_EACH")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/seq/for_each.hpp>\n"
+      "#define M(r, data, elem) elem ;\n"
+      "BOOST_PP_SEQ_FOR_EACH(M, ~, (a)(b)(c))\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 6);
+  CHECK(out.spellings[0] == "a");
+  CHECK(out.spellings[1] == ";");
+  CHECK(out.spellings[2] == "b");
+  CHECK(out.spellings[3] == ";");
+  CHECK(out.spellings[4] == "c");
+  CHECK(out.spellings[5] == ";");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_TUPLE_ELEM / TUPLE_SIZE")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/tuple/elem.hpp>\n"
+      "#include <boost/preprocessor/tuple/size.hpp>\n"
+      "BOOST_PP_TUPLE_ELEM(1, (a, b, c))\n"
+      "BOOST_PP_TUPLE_SIZE((a, b, c, d))\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 2);
+  CHECK(out.spellings[0] == "b");
+  CHECK(out.spellings[1] == "4");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_LIST_FOR_EACH")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/list/for_each.hpp>\n"
+      "#define M(r, data, elem) elem\n"
+      "BOOST_PP_LIST_FOR_EACH(M, ~, (a, (b, (c, BOOST_PP_NIL))))\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 3);
+  CHECK(out.spellings[0] == "a");
+  CHECK(out.spellings[1] == "b");
+  CHECK(out.spellings[2] == "c");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_ENUM_PARAMS")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/repetition/enum_params.hpp>\n"
+      "BOOST_PP_ENUM_PARAMS(3, T)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 5);
+  CHECK(out.spellings[0] == "T0");
+  CHECK(out.spellings[1] == ",");
+  CHECK(out.spellings[2] == "T1");
+  CHECK(out.spellings[3] == ",");
+  CHECK(out.spellings[4] == "T2");
+}
+
+TEST_CASE("Boost.PP: BOOST_PP_IIF / BOOL")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/control/iif.hpp>\n"
+      "#include <boost/preprocessor/logical/bool.hpp>\n"
+      "BOOST_PP_IIF(BOOST_PP_BOOL(5), yes, no)\n"
+      "BOOST_PP_IIF(BOOST_PP_BOOL(0), yes, no)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 2);
+  CHECK(out.spellings[0] == "yes");
+  CHECK(out.spellings[1] == "no");
+}
+
+TEST_CASE("Boost.PP: nested BOOST_PP_REPEAT")
+{
+  if (!boost_pp_available()) SKIP("Boost.PP not installed at /usr/include");
+  search_dirs() = {"/usr/include"};
+  auto out = run(
+      "#include <boost/preprocessor/repetition/repeat.hpp>\n"
+      "#define INNER(z, j, i) x ## i ## j\n"
+      "#define OUTER(z, i, data) BOOST_PP_REPEAT_ ## z (2, INNER, i)\n"
+      "BOOST_PP_REPEAT(2, OUTER, ~)\n");
+  for (auto const& d : out.diags) INFO(d.message);
+  REQUIRE(out.spellings.size() == 4);
+  CHECK(out.spellings[0] == "x00");
+  CHECK(out.spellings[1] == "x01");
+  CHECK(out.spellings[2] == "x10");
+  CHECK(out.spellings[3] == "x11");
+}
